@@ -15,6 +15,8 @@
         devShells.default = (pkgs.buildFHSEnv {
           name = "pyqt-fhs";
           targetPkgs = pkgs: with pkgs; [
+            uv
+            
             # Python
             python3
             python3Packages.pip
@@ -62,6 +64,7 @@
             
             # Launch bash with the venv activated
             # We inherit the environment variables from the source above
+            echo "You are now in dev shell!"
             exec bash
           '';
         }).env;
