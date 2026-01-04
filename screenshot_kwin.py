@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 import dbus
-import os
-import time
 import tempfile
+from PIL import Image
 
 def capture_screenshot(output_file="screenshot.png"):
     """
@@ -42,10 +41,33 @@ def capture_screenshot(output_file="screenshot.png"):
                 print("Warning: Received empty data.")
                 return
 
-            with open(output_file, "wb") as f:
-                f.write(data)
-            
-            print(f"Saved to {output_file} ({len(data)} bytes).")
+            width = int(metadata.get('width', 0))
+            height = int(metadata.get('height', 0))
+            stride = int(metadata.get('stride', 0))
+            fmt = int(metadata.get('format', 0))
+
+            print(f"Image info: {width}x{height}, stride={stride}, format={fmt}")
+
+            # KWin ScreenShot2 typically returns BGRA data (format 6 or 5)
+            # We construct the image using PIL
+            # stride / width gives bytes per pixel.
+            if width > 0 and height > 0:
+                bpp = stride // width
+                if bpp == 4:
+                    # Likely BGRA
+                    mode = "RGBA"
+                    raw_mode = "BGRA"
+                    image = Image.frombytes(mode, (width, height), data, "raw", raw_mode, stride)
+                    image.save(output_file)
+                    print(f"Saved valid PNG to {output_file}")
+                else:
+                    # Fallback or other formats
+                    print(f"Unsupported bytes per pixel: {bpp}. Saving raw data dump.")
+                    with open(output_file + ".raw", "wb") as f:
+                        f.write(data)
+            else:
+                print("Invalid dimensions in metadata.")
+
 
     except dbus.DBusException as e:
         print(f"DBus Error: {e}")
