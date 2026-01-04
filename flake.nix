@@ -21,6 +21,7 @@
             python3
             python3Packages.pip
             python3Packages.virtualenv
+            python3Packages.dbus-python
             
             # Qt basics
             libsForQt5.qt5.qtbase
@@ -53,7 +54,7 @@
             # Check if .venv exists, if not create it
             if [ ! -d ".venv" ]; then
               echo "Creating virtual environment (.venv)..."
-              python -m venv .venv
+              python -m venv .venv --system-site-packages
             fi
             
             # Prepare the activation command
