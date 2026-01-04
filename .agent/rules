@@ -1,1 +1,2 @@
 1. run `nix develop` to enter devShell once acquire a terminal, before all commands. You should have seen output "You are now in dev shell!" before execute any command.
+2. use `uv add` to install dependencies. DO NOT edit `requirements.txt` by hand. DO NOT use `pip install`.
