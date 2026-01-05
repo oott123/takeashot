@@ -32,8 +32,8 @@
           ];
           
           shellHook = ''
-            # Ensure the python environment is on the path
             export PYTHONPATH=${pythonEnv}/${pythonEnv.sitePackages}
+            python -V
           '';
         };
       }

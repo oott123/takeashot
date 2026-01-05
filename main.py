@@ -3,7 +3,8 @@ import signal
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
 from PyQt5.QtCore import Qt, QObject
 from PyQt5.QtGui import QIcon, QGuiApplication
-from screenshot_tool import ScreenshotBackend, SnippingWidget
+from screenshot_backend import ScreenshotBackend
+from snipping_widget import SnippingWidget
 
 class ScreenshotApp(QObject):
     def __init__(self):
