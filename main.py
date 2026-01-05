@@ -1,20 +1,20 @@
 import sys
 import signal
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
-from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize
-from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter
+from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize, QRectF
+from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
 from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWidget
+
+# Enable High DPI scaling - MUST be set before QApplication creation
+if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
 
 class ScreenshotApp(QObject):
     def __init__(self):
         super().__init__()
-        # Enable High DPI scaling
-        if hasattr(Qt, 'AA_EnableHighDpiScaling'):
-            QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
-        if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
-            QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
-            
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
         
@@ -87,10 +87,20 @@ class ScreenshotApp(QObject):
         all_success = True
         
         for screen in screens:
-            # We assume screen.name() acts as the identifier KWin expects
             p = self.backend.capture_screen(screen.name())
             if p:
-                p.setDevicePixelRatio(screen.devicePixelRatio())
+                # Calculate the ACTUAL DPR based on physical pixels vs logical geometry
+                # This is more reliable than screen.devicePixelRatio() which may return 1.0 
+                # in some XWayland/KDE configurations while the screenshot is native.
+                geo = screen.geometry()
+                phys_w = p.width()
+                logic_w = geo.width()
+                
+                # Use the ratio of physical to logical
+                actual_dpr = phys_w / logic_w if logic_w > 0 else 1.0
+                p.setDevicePixelRatio(actual_dpr)
+                
+                print(f"Captured {screen.name()}: Logical {logic_w}x{geo.height()}, Physical {phys_w}x{p.height()}, DPR {actual_dpr}")
                 screen_pixmaps[screen] = p
             else:
                 all_success = False
@@ -147,54 +157,75 @@ class ScreenshotApp(QObject):
         if self.selection_rect.isNull():
             return
 
-        # Find all screens intersecting the selection
-        intersecting_snippers = []
+        # Normalize selection to handle any-direction drag
+        sel_rect = self.selection_rect.normalized()
+        
+        # Determine all intersecting screens and the target max DPR
+        intersecting_data = []
         max_dpr = 1.0
+        
         for snipper in self.snippers:
-            if snipper.screen_geometry.intersects(self.selection_rect):
-                intersecting_snippers.append(snipper)
-                max_dpr = max(max_dpr, snipper.full_pixmap.devicePixelRatio())
+            inter = snipper.screen_geometry.intersected(sel_rect)
+            if not inter.isEmpty():
+                dpr = snipper.full_pixmap.devicePixelRatio()
+                intersecting_data.append((snipper, inter, dpr))
+                if dpr > max_dpr:
+                    max_dpr = dpr
 
-        if not intersecting_snippers:
+        if not intersecting_data:
             return
 
-        # Create target pixmap
-        target_w = self.selection_rect.width()
-        target_h = self.selection_rect.height()
-        result_pixmap = QPixmap(int(target_w * max_dpr), int(target_h * max_dpr))
-        result_pixmap.setDevicePixelRatio(max_dpr)
-        result_pixmap.fill(Qt.transparent)
+        # Target size in physical pixels
+        target_w_phys = int(round(sel_rect.width() * max_dpr))
+        target_h_phys = int(round(sel_rect.height() * max_dpr))
+        
+        if target_w_phys <= 0 or target_h_phys <= 0:
+            return
 
-        painter = QPainter(result_pixmap)
+        # Create result image in physical pixels (NO devicePixelRatio set - we work in raw pixels)
+        result_img = QImage(target_w_phys, target_h_phys, QImage.Format_ARGB32)
+        result_img.fill(Qt.transparent)
+
+        painter = QPainter(result_img)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         
-        # We draw each screen's part into the result pixmap
-        # The result pixmap's origin (0,0) corresponds to self.selection_rect.topLeft()
-        
-        for snipper in intersecting_snippers:
-            # Intersection in global coords
-            inter = snipper.screen_geometry.intersected(self.selection_rect)
-            if inter.isEmpty():
-                continue
+        for snipper, inter, s_dpr in intersecting_data:
+            # inter is the intersection rectangle in GLOBAL LOGICAL coordinates
+            # We need to:
+            # 1. Find the source region in the snipper's pixmap (in physical pixels)
+            # 2. Find the target region in result_img (in physical pixels)
             
-            # Where this intersection goes in the target pixmap (logical coords)
-            target_rect = inter.translated(-self.selection_rect.topLeft())
+            # Source: offset from snipper's screen origin, scaled by that screen's DPR
+            src_x = (inter.x() - snipper.screen_geometry.x()) * s_dpr
+            src_y = (inter.y() - snipper.screen_geometry.y()) * s_dpr
+            src_w = inter.width() * s_dpr
+            src_h = inter.height() * s_dpr
             
-            # Where this intersection comes from in the screen pixmap (logical coords relative to screen)
-            source_rect = inter.translated(-snipper.screen_geometry.topLeft())
+            # Target: offset from selection origin, scaled by max_dpr
+            tgt_x = (inter.x() - sel_rect.x()) * max_dpr
+            tgt_y = (inter.y() - sel_rect.y()) * max_dpr
+            tgt_w = inter.width() * max_dpr
+            tgt_h = inter.height() * max_dpr
             
-            # Draw the portion. Qt handles DPR scaling if we pass QRect and QPixmap correctly.
-            # To be safe, we use the source pixmap which has its own DPR.
-            painter.drawPixmap(target_rect, snipper.full_pixmap, source_rect)
+            source_rect = QRectF(src_x, src_y, src_w, src_h)
+            target_rect = QRectF(tgt_x, tgt_y, tgt_w, tgt_h)
+            
+            # Convert pixmap to QImage to bypass DPR interpretation issues
+            # QPixmap.toImage() gives raw physical pixels
+            src_image = snipper.full_pixmap.toImage()
+            
+            painter.drawImage(target_rect, src_image, source_rect)
 
         painter.end()
 
+        # Convert to pixmap for clipboard
+        result_pixmap = QPixmap.fromImage(result_img)
+        # Set DPR so apps that understand it can display at correct size
+        result_pixmap.setDevicePixelRatio(max_dpr)
+
         clipboard = QApplication.clipboard()
         clipboard.setPixmap(result_pixmap)
-        print(f"Cross-screen screenshot ({target_w}x{target_h}) copied to clipboard.")
-
-    def on_snipper_closed(self):
-        if self.snippers:
-            self.close_all_snippers()
+        print(f"Captured {sel_rect.width()}x{sel_rect.height()} logical ({target_w_phys}x{target_h_phys} physical) to clipboard.")
 
     def on_mouse_press(self, global_pos):
         # Check for resize handles first
