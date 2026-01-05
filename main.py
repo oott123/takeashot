@@ -1,8 +1,8 @@
 import sys
 import signal
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
-from PyQt5.QtCore import Qt, QObject
-from PyQt5.QtGui import QIcon, QGuiApplication
+from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize
+from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter
 from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWidget
 
@@ -53,6 +53,17 @@ class ScreenshotApp(QObject):
         # Keep track of active snipping widgets
         self.snippers = []
 
+        # Global Selection State
+        self.selection_rect = QRect()
+        self.is_selecting = False
+        self.active_handle = None
+        self.drag_start_pos = QPoint()
+        self.rect_start_geometry = QRect()
+        self.origin = QPoint()
+
+        # Constants
+        self.RESIZE_HANDLE_SIZE = 8
+
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
             self.start_capture()
@@ -60,6 +71,11 @@ class ScreenshotApp(QObject):
     def start_capture(self):
         print("Starting capture...")
         self.close_all_snippers()
+        
+        # Reset selection state
+        self.selection_rect = QRect()
+        self.is_selecting = False
+        self.active_handle = None
         
         screens = QGuiApplication.screens()
         if not screens:
@@ -82,17 +98,7 @@ class ScreenshotApp(QObject):
         
         if all_success:
             print("Used per-screen capture.")
-            for screen, pixmap in screen_pixmaps.items():
-                geo = screen.geometry()
-                snipper = SnippingWidget(pixmap, geo.x(), geo.y(), geo.width(), geo.height())
-                snipper.selection_started.connect(self.on_selection_started)
-                snipper.closed.connect(self.on_snipper_closed)
-                
-                if snipper.windowHandle():
-                    snipper.windowHandle().setScreen(screen)
-                    
-                snipper.show()
-                self.snippers.append(snipper)
+            self._launch_snippers(screen_pixmaps)
             return
 
         # Fallback to workspace capture (stitched)
@@ -102,11 +108,7 @@ class ScreenshotApp(QObject):
             print("Failed to capture screenshot.")
             return
 
-        # Note: Slicing a stitched workspace pixmap correctly with mixed DPI is difficult 
-        # without knowing how KWin stitches them physically.
-        # We will try a best-effort slicing based on logical geometry, 
-        # but we won't set a global DPR on the source pixmap.
-        
+        screen_pixmaps = {}
         # Calculate bounding box of all screens to find offsets
         x_min = min(s.geometry().x() for s in screens)
         y_min = min(s.geometry().y() for s in screens)
@@ -115,23 +117,8 @@ class ScreenshotApp(QObject):
             geo = screen.geometry()
             dpr = screen.devicePixelRatio()
             
-            # Heuristic: KWin usually stitches top-left aligned, scaled by DPR.
-            # But "geo" is logical.
-            # Let's try slicing based on Screen geometry assuming 1:1 if we can't do better.
-            # OR we try to slice assuming the workspace image matches the composite logical layout * MaxDPR?
-            # Actually, standard KWin behavior for 'native-resolution' returns full physical size.
-            # If we just cut based on (x - min_x) * dpr ... ? This is a guess.
-            
-            # Let's try to just map logical coordinates.
             rel_x = geo.x() - x_min
             rel_y = geo.y() - y_min
-            
-            # Since pixmap is physical, we need to scale logical coordinates to physical
-            # BUT this only works if the stitching preserves this mapping.
-            # If this fallback path is hit, the result might be imperfect, but 'CaptureScreen' should succeed on KWin.
-            
-            # Using logical slicing on physical image often results in small top-left crop on HiDPI.
-            # So we MUST scale.
             
             phy_x = int(rel_x * dpr)
             phy_y = int(rel_y * dpr)
@@ -140,22 +127,153 @@ class ScreenshotApp(QObject):
             
             screen_pixmap = pixmap.copy(phy_x, phy_y, phy_w, phy_h)
             screen_pixmap.setDevicePixelRatio(dpr)
-            
-            snipper = SnippingWidget(screen_pixmap, geo.x(), geo.y(), geo.width(), geo.height())
-            snipper.selection_started.connect(self.on_selection_started)
+            screen_pixmaps[screen] = screen_pixmap
+
+        self._launch_snippers(screen_pixmaps)
+
+    def _launch_snippers(self, screen_pixmaps):
+        for screen, pixmap in screen_pixmaps.items():
+            geo = screen.geometry()
+            snipper = SnippingWidget(self, pixmap, geo.x(), geo.y(), geo.width(), geo.height())
             snipper.closed.connect(self.on_snipper_closed)
             
             if snipper.windowHandle():
                 snipper.windowHandle().setScreen(screen)
-            
+                
             snipper.show()
             self.snippers.append(snipper)
 
-    def on_selection_started(self):
-        sender = self.sender()
+    def capture_selection(self):
+        if self.selection_rect.isNull():
+            return
+
+        # Find all screens intersecting the selection
+        intersecting_snippers = []
+        max_dpr = 1.0
         for snipper in self.snippers:
-            if snipper != sender:
-                snipper.clear_selection()
+            if snipper.screen_geometry.intersects(self.selection_rect):
+                intersecting_snippers.append(snipper)
+                max_dpr = max(max_dpr, snipper.full_pixmap.devicePixelRatio())
+
+        if not intersecting_snippers:
+            return
+
+        # Create target pixmap
+        target_w = self.selection_rect.width()
+        target_h = self.selection_rect.height()
+        result_pixmap = QPixmap(int(target_w * max_dpr), int(target_h * max_dpr))
+        result_pixmap.setDevicePixelRatio(max_dpr)
+        result_pixmap.fill(Qt.transparent)
+
+        painter = QPainter(result_pixmap)
+        
+        # We draw each screen's part into the result pixmap
+        # The result pixmap's origin (0,0) corresponds to self.selection_rect.topLeft()
+        
+        for snipper in intersecting_snippers:
+            # Intersection in global coords
+            inter = snipper.screen_geometry.intersected(self.selection_rect)
+            if inter.isEmpty():
+                continue
+            
+            # Where this intersection goes in the target pixmap (logical coords)
+            target_rect = inter.translated(-self.selection_rect.topLeft())
+            
+            # Where this intersection comes from in the screen pixmap (logical coords relative to screen)
+            source_rect = inter.translated(-snipper.screen_geometry.topLeft())
+            
+            # Draw the portion. Qt handles DPR scaling if we pass QRect and QPixmap correctly.
+            # To be safe, we use the source pixmap which has its own DPR.
+            painter.drawPixmap(target_rect, snipper.full_pixmap, source_rect)
+
+        painter.end()
+
+        clipboard = QApplication.clipboard()
+        clipboard.setPixmap(result_pixmap)
+        print(f"Cross-screen screenshot ({target_w}x{target_h}) copied to clipboard.")
+
+    def on_snipper_closed(self):
+        if self.snippers:
+            self.close_all_snippers()
+
+    def on_mouse_press(self, global_pos):
+        # Check for resize handles first
+        handle = self.get_handle_at(global_pos)
+        if handle:
+            self.active_handle = handle
+            self.drag_start_pos = global_pos
+            self.rect_start_geometry = self.selection_rect
+            self.is_selecting = True
+        else:
+            # Start new selection
+            self.active_handle = 'new'
+            self.origin = global_pos
+            self.selection_rect = QRect(self.origin, QSize(0,0))
+            self.is_selecting = True
+        self.update_snippets()
+
+    def on_mouse_move(self, global_pos):
+        if not self.is_selecting:
+            return
+
+        if self.active_handle == 'new':
+            self.selection_rect = QRect(self.origin, global_pos).normalized()
+        elif self.active_handle == 'move':
+            delta = global_pos - self.drag_start_pos
+            self.selection_rect = self.rect_start_geometry.translated(delta)
+        else:
+            # Resizing logic
+            r = self.rect_start_geometry
+            dx = global_pos.x() - self.drag_start_pos.x()
+            dy = global_pos.y() - self.drag_start_pos.y()
+            
+            new_r = QRect(r)
+            
+            if 'l' in self.active_handle: new_r.setLeft(r.left() + dx)
+            if 'r' in self.active_handle: new_r.setRight(r.right() + dx)
+            if 't' in self.active_handle: new_r.setTop(r.top() + dy)
+            if 'b' in self.active_handle: new_r.setBottom(r.bottom() + dy)
+            
+            self.selection_rect = new_r.normalized()
+        
+        self.update_snippets()
+
+    def on_mouse_release(self):
+        self.is_selecting = False
+        self.selection_rect = self.selection_rect.normalized()
+        self.update_snippets()
+
+    def update_snippets(self):
+        for snipper in self.snippers:
+            snipper.update()
+
+    def get_handle_rects(self):
+        r = self.selection_rect
+        s = self.RESIZE_HANDLE_SIZE
+        hs = s // 2
+        
+        return {
+            'tl': QRect(r.left() - hs, r.top() - hs, s, s),
+            't':  QRect(r.center().x() - hs, r.top() - hs, s, s),
+            'tr': QRect(r.right() - hs, r.top() - hs, s, s),
+            'r':  QRect(r.right() - hs, r.center().y() - hs, s, s),
+            'br': QRect(r.right() - hs, r.bottom() - hs, s, s),
+            'b':  QRect(r.center().x() - hs, r.bottom() - hs, s, s),
+            'bl': QRect(r.left() - hs, r.bottom() - hs, s, s),
+            'l':  QRect(r.left() - hs, r.center().y() - hs, s, s),
+        }
+
+    def get_handle_at(self, global_pos):
+        if self.selection_rect.isNull():
+            return None
+            
+        handles = self.get_handle_rects()
+        for name, rect in handles.items():
+            if rect.contains(global_pos):
+                return name
+        if self.selection_rect.contains(global_pos):
+            return 'move'
+        return None
 
     def on_snipper_closed(self):
         if self.snippers:

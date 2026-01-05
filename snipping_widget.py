@@ -1,13 +1,13 @@
 from PyQt5.QtWidgets import QWidget, QApplication
 from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint
-from PyQt5.QtGui import QPainter, QColor, QBrush, QPen
+from PyQt5.QtGui import QPainter, QColor, QBrush, QPen, QRegion
 
 class SnippingWidget(QWidget):
     closed = pyqtSignal()
-    selection_started = pyqtSignal()
     
-    def __init__(self, pixmap, x, y, width, height):
+    def __init__(self, controller, pixmap, x, y, width, height):
         super().__init__()
+        self.controller = controller
         self.setWindowState(Qt.WindowFullScreen)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.X11BypassWindowManagerHint)
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -15,21 +15,9 @@ class SnippingWidget(QWidget):
         self.full_pixmap = pixmap
         self.screen_geometry = QRect(x, y, width, height)
         
-        # Selection state
-        self.selection_rect = QRect()
-        self.is_selecting = False
-        self.resize_handle_size = 8
-        self.active_handle = None # 'tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l', 'move'
-        
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
         self.show()
-
-    def clear_selection(self):
-        self.selection_rect = QRect()
-        self.active_handle = None
-        self.is_selecting = False
-        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -41,164 +29,88 @@ class SnippingWidget(QWidget):
         painter.drawPixmap(0, 0, self.full_pixmap)
         
         # 2. Draw overlay
-        # We want everything DARK except the selection
+        # We want everything DARK except the selection INTERSECTED with this screen
         overlay_color = QColor(0, 0, 0, 100) # Semi-transparent black
         
-        if self.selection_rect.isNull():
+        global_sel = self.controller.selection_rect
+        if global_sel.isNull():
             painter.fillRect(self.rect(), overlay_color)
         else:
-            # Draw 4 rectangles around the selection
-            # Top
-            r_top = QRect(0, 0, self.width(), self.selection_rect.top())
-            # Bottom
-            r_bottom = QRect(0, self.selection_rect.bottom() + 1, self.width(), self.height() - self.selection_rect.bottom() - 1)
-            # Left
-            r_left = QRect(0, self.selection_rect.top(), self.selection_rect.left(), self.selection_rect.height())
-            # Right
-            r_right = QRect(self.selection_rect.right() + 1, self.selection_rect.top(), self.width() - self.selection_rect.right() - 1, self.selection_rect.height())
+            # We need to draw the global selection in local coordinates.
+            # Local (0,0) is self.screen_geometry.topLeft() in global space.
+            # So, local_rect = global_rect.translated(-self.screen_geometry.topLeft())
             
-            painter.fillRect(r_top, overlay_color)
-            painter.fillRect(r_bottom, overlay_color)
-            painter.fillRect(r_left, overlay_color)
-            painter.fillRect(r_right, overlay_color)
+            # However, we want to draw the *entire* overlay logic based on the local view of the global state.
             
-            # Draw selection border
+            # Let's define the local selection rect
+            offset = -self.screen_geometry.topLeft()
+            local_sel = global_sel.translated(offset)
+            
+            # Draw overlay around the selection
+            # An easy way is to use QRegion subtraction, but rects are faster.
+            # We effectively want to fill self.rect() MINUS local_sel
+            
+            region_all = QRegion(self.rect())
+            region_sel = QRegion(local_sel)
+            region_overlay = region_all.subtracted(region_sel)
+            
+            for rect in region_overlay.rects():
+                painter.fillRect(rect, overlay_color)
+            
+            # Draw selection border (of the full global rect, clipped by window)
             pen = QPen(QColor(0, 120, 215), 1)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
-            painter.drawRect(self.selection_rect)
+            painter.drawRect(local_sel)
             
             # Draw resize handles
-            self.draw_handles(painter)
+            self.draw_handles(painter, offset)
 
-    def draw_handles(self, painter):
-        if self.selection_rect.isNull():
-            return
-            
-        handles = self.get_handle_rects()
+    def draw_handles(self, painter, offset):
+        handles = self.controller.get_handle_rects()
         painter.setBrush(QBrush(QColor(255, 255, 255)))
         painter.setPen(QPen(QColor(0, 0, 0), 1))
         
         for handle_rect in handles.values():
-            painter.drawRect(handle_rect)
-
-    def get_handle_rects(self):
-        r = self.selection_rect
-        s = self.resize_handle_size
-        hs = s // 2
-        
-        return {
-            'tl': QRect(r.left() - hs, r.top() - hs, s, s),
-            't':  QRect(r.center().x() - hs, r.top() - hs, s, s),
-            'tr': QRect(r.right() - hs, r.top() - hs, s, s),
-            'r':  QRect(r.right() - hs, r.center().y() - hs, s, s),
-            'br': QRect(r.right() - hs, r.bottom() - hs, s, s),
-            'b':  QRect(r.center().x() - hs, r.bottom() - hs, s, s),
-            'bl': QRect(r.left() - hs, r.bottom() - hs, s, s),
-            'l':  QRect(r.left() - hs, r.center().y() - hs, s, s),
-        }
-
-    def get_handle_at(self, pos):
-        if self.selection_rect.isNull():
-            return None
-            
-        handles = self.get_handle_rects()
-        for name, rect in handles.items():
-            if rect.contains(pos):
-                return name
-        if self.selection_rect.contains(pos):
-            return 'move'
-        return None
+            # handle_rect is global, map to local
+            local_handle = handle_rect.translated(offset)
+            # Only draw if it intersects our screen (window handles clipping mostly, but good to check)
+            if local_handle.intersects(self.rect()):
+                painter.drawRect(local_handle)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.selection_started.emit()
-            
-            handle = self.get_handle_at(event.pos())
-            if handle:
-                self.active_handle = handle
-                self.drag_start_pos = event.pos()
-                self.rect_start_geometry = self.selection_rect
-                self.is_selecting = True
-            else:
-                self.active_handle = 'new'
-                self.origin = event.pos()
-                self.selection_rect = QRect(self.origin, QSize(0,0))
-                self.is_selecting = True
-                self.update()
+            self.controller.on_mouse_press(event.globalPos())
         elif event.button() == Qt.RightButton:
             QTimer.singleShot(0, self.close)
 
     def mouseMoveEvent(self, event):
-        if not self.is_selecting:
-            # Update cursor based on hover
-            handle = self.get_handle_at(event.pos())
+        # Forward move to controller to update active handle / selection
+        # But for cursor update (hover), we can query controller
+        
+        global_pos = event.globalPos()
+        
+        if not self.controller.is_selecting:
+            handle = self.controller.get_handle_at(global_pos)
             if handle in ['tl', 'br']: self.setCursor(Qt.SizeFDiagCursor)
             elif handle in ['tr', 'bl']: self.setCursor(Qt.SizeBDiagCursor)
             elif handle in ['t', 'b']: self.setCursor(Qt.SizeVerCursor)
             elif handle in ['l', 'r']: self.setCursor(Qt.SizeHorCursor)
             elif handle == 'move': self.setCursor(Qt.SizeAllCursor)
             else: self.setCursor(Qt.CrossCursor)
-            return
-
-        pos = event.pos()
         
-        if self.active_handle == 'new':
-            self.selection_rect = QRect(self.origin, pos).normalized()
-        elif self.active_handle == 'move':
-            delta = pos - self.drag_start_pos
-            self.selection_rect = self.rect_start_geometry.translated(delta)
-        else:
-            # Resizing logic
-            r = self.rect_start_geometry
-            dx = pos.x() - self.drag_start_pos.x()
-            dy = pos.y() - self.drag_start_pos.y()
-            
-            new_r = QRect(r)
-            
-            if 'l' in self.active_handle: new_r.setLeft(r.left() + dx)
-            if 'r' in self.active_handle: new_r.setRight(r.right() + dx)
-            if 't' in self.active_handle: new_r.setTop(r.top() + dy)
-            if 'b' in self.active_handle: new_r.setBottom(r.bottom() + dy)
-            
-            self.selection_rect = new_r.normalized()
-        
-        self.update()
+        self.controller.on_mouse_move(global_pos)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.is_selecting = False
-            self.selection_rect = self.selection_rect.normalized()
-            self.update()
+            self.controller.on_mouse_release()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             QTimer.singleShot(0, self.close)
         elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-            if not self.selection_rect.isNull():
-                self.take_snippet()
+            self.controller.capture_selection()
             QTimer.singleShot(0, self.close)
-
-    def take_snippet(self):
-        # Scale selection rect to physical pixels
-        dpr = self.full_pixmap.devicePixelRatio()
-        
-        # selection_rect is in logical coords (widget coords)
-        # We need to map it to the physical pixel coordinates of the pixmap
-        x = int(self.selection_rect.x() * dpr)
-        y = int(self.selection_rect.y() * dpr)
-        w = int(self.selection_rect.width() * dpr)
-        h = int(self.selection_rect.height() * dpr)
-        
-        physical_rect = QRect(x, y, w, h)
-        snippet = self.full_pixmap.copy(physical_rect)
-        
-        # Ensure the snippet retains the DPR so it pastes correctly in high-dpi aware apps
-        snippet.setDevicePixelRatio(dpr)
-        
-        clipboard = QApplication.clipboard()
-        clipboard.setPixmap(snippet)
-        print("Screenshot copied to clipboard.")
 
     def closeEvent(self, event):
         self.closed.emit()
