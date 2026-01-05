@@ -23,6 +23,9 @@
             python3Packages.virtualenv
             python3Packages.dbus-python
             python3Packages.pillow
+            python3Packages.pyqt5
+            python3Packages.pyqt5-sip
+            python3Packages.sip
             
             # Qt basics
             libsForQt5.qt5.qtbase
