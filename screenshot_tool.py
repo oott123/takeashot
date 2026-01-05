@@ -78,6 +78,7 @@ class SnippingWidget(QWidget):
         self.resize_handle_size = 8
         self.active_handle = None # 'tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l', 'move'
         
+        self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
         self.show()
 
@@ -155,6 +156,9 @@ class SnippingWidget(QWidget):
         }
 
     def get_handle_at(self, pos):
+        if self.selection_rect.isNull():
+            return None
+            
         handles = self.get_handle_rects()
         for name, rect in handles.items():
             if rect.contains(pos):
