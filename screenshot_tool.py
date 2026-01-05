@@ -85,6 +85,7 @@ class SnippingWidget(QWidget):
     
     def __init__(self, pixmap, x, y, width, height):
         super().__init__()
+        self.setWindowState(Qt.WindowFullScreen)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.X11BypassWindowManagerHint)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setGeometry(x, y, width, height)
