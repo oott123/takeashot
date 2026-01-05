@@ -3,7 +3,7 @@ import tempfile
 import sys
 import os
 from PyQt5.QtWidgets import QWidget, QApplication, QRubberBand
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QBuffer, QIODevice
+from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QBuffer, QIODevice, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QImage, QCursor, QBrush, QPen, QGuiApplication
 
 class ScreenshotBackend:
@@ -184,7 +184,7 @@ class SnippingWidget(QWidget):
                 self.is_selecting = True
                 self.update()
         elif event.button() == Qt.RightButton:
-            self.close()
+            QTimer.singleShot(0, self.close)
 
     def mouseMoveEvent(self, event):
         if not self.is_selecting:
@@ -230,11 +230,11 @@ class SnippingWidget(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self.close()
+            QTimer.singleShot(0, self.close)
         elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             if not self.selection_rect.isNull():
                 self.take_snippet()
-            self.close()
+            QTimer.singleShot(0, self.close)
 
     def take_snippet(self):
         # Scale selection rect to physical pixels
