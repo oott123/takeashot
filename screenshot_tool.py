@@ -233,7 +233,22 @@ class SnippingWidget(QWidget):
             self.close()
 
     def take_snippet(self):
-        snippet = self.full_pixmap.copy(self.selection_rect)
+        # Scale selection rect to physical pixels
+        dpr = self.full_pixmap.devicePixelRatio()
+        
+        # selection_rect is in logical coords (widget coords)
+        # We need to map it to the physical pixel coordinates of the pixmap
+        x = int(self.selection_rect.x() * dpr)
+        y = int(self.selection_rect.y() * dpr)
+        w = int(self.selection_rect.width() * dpr)
+        h = int(self.selection_rect.height() * dpr)
+        
+        physical_rect = QRect(x, y, w, h)
+        snippet = self.full_pixmap.copy(physical_rect)
+        
+        # Ensure the snippet retains the DPR so it pastes correctly in high-dpi aware apps
+        snippet.setDevicePixelRatio(dpr)
+        
         clipboard = QApplication.clipboard()
         clipboard.setPixmap(snippet)
         print("Screenshot copied to clipboard.")
