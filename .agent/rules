@@ -1,3 +1,0 @@
-1. run `nix develop` to enter devShell once acquire a terminal, before all commands.
-2. edit `flake.nix` to add dependencies. run `nix develop` again to rebuild dev shell.
-3. if you get `python3 is not found` like errors, use `nix develop -c bash -c "command"` to execute commands.
