@@ -1,12 +1,13 @@
 import sys
 import signal
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QObject
 from PyQt5.QtGui import QIcon, QGuiApplication
 from screenshot_tool import ScreenshotBackend, SnippingWidget
 
-class ScreenshotApp:
+class ScreenshotApp(QObject):
     def __init__(self):
+        super().__init__()
         # Enable High DPI scaling
         if hasattr(Qt, 'AA_EnableHighDpiScaling'):
             QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -48,8 +49,8 @@ class ScreenshotApp:
         
         self.tray_icon.show()
         
-        # Keep track of active snipping widget
-        self.snipper = None
+        # Keep track of active snipping widgets
+        self.snippers = []
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -57,31 +58,117 @@ class ScreenshotApp:
 
     def start_capture(self):
         print("Starting capture...")
-        pixmap = self.backend.capture()
-        if pixmap:
-            # We want to cover all screens. 
-            # In Wayland, creating a window that spans all screens is tricky.
-            # But normally we just request full screen geometry.
-            # For simplicity, let's grab the virtual geometry.
-            desktop = self.app.desktop()
-            geometry = desktop.geometry()
-            
-            # If we used CaptureActiveScreen, the pixmap might be smaller than full desktop 
-            # if multiple monitors are present but we only captured one. 
-            # However, SnippingWidget expects to draw the pixmap.
-            
-            # If pixmap size doesn't match virtual desktop, we might have an issue 
-            # positioning it correctly relative to screens. 
-            # But let's assume KWin gives us the right thing or we just show it on primary.
-            
-            # To handle multiple monitors properly with one giant overlay window often requires 
-            # X11BypassWindowManagerHint (which we set) and correct geometry.
-            
-            self.snipper = SnippingWidget(pixmap, geometry.x(), geometry.y(), geometry.width(), geometry.height())
-            self.snipper.show()
-            self.snipper.activateWindow()
-        else:
+        self.close_all_snippers()
+        
+        screens = QGuiApplication.screens()
+        if not screens:
+            print("No screens found")
+            return
+
+        # Attempt per-screen capture first (best for multi-monitor/HiDPI)
+        screen_pixmaps = {}
+        all_success = True
+        
+        for screen in screens:
+            # We assume screen.name() acts as the identifier KWin expects
+            p = self.backend.capture_screen(screen.name())
+            if p:
+                p.setDevicePixelRatio(screen.devicePixelRatio())
+                screen_pixmaps[screen] = p
+            else:
+                all_success = False
+                break
+        
+        if all_success:
+            print("Used per-screen capture.")
+            for screen, pixmap in screen_pixmaps.items():
+                geo = screen.geometry()
+                snipper = SnippingWidget(pixmap, geo.x(), geo.y(), geo.width(), geo.height())
+                snipper.selection_started.connect(self.on_selection_started)
+                snipper.closed.connect(self.on_snipper_closed)
+                
+                if snipper.windowHandle():
+                    snipper.windowHandle().setScreen(screen)
+                    
+                snipper.show()
+                self.snippers.append(snipper)
+            return
+
+        # Fallback to workspace capture (stitched)
+        print("Per-screen capture failed/incomplete. Falling back to workspace capture.")
+        pixmap = self.backend.capture_workspace()
+        if not pixmap:
             print("Failed to capture screenshot.")
+            return
+
+        # Note: Slicing a stitched workspace pixmap correctly with mixed DPI is difficult 
+        # without knowing how KWin stitches them physically.
+        # We will try a best-effort slicing based on logical geometry, 
+        # but we won't set a global DPR on the source pixmap.
+        
+        # Calculate bounding box of all screens to find offsets
+        x_min = min(s.geometry().x() for s in screens)
+        y_min = min(s.geometry().y() for s in screens)
+        
+        for screen in screens:
+            geo = screen.geometry()
+            dpr = screen.devicePixelRatio()
+            
+            # Heuristic: KWin usually stitches top-left aligned, scaled by DPR.
+            # But "geo" is logical.
+            # Let's try slicing based on Screen geometry assuming 1:1 if we can't do better.
+            # OR we try to slice assuming the workspace image matches the composite logical layout * MaxDPR?
+            # Actually, standard KWin behavior for 'native-resolution' returns full physical size.
+            # If we just cut based on (x - min_x) * dpr ... ? This is a guess.
+            
+            # Let's try to just map logical coordinates.
+            rel_x = geo.x() - x_min
+            rel_y = geo.y() - y_min
+            
+            # Since pixmap is physical, we need to scale logical coordinates to physical
+            # BUT this only works if the stitching preserves this mapping.
+            # If this fallback path is hit, the result might be imperfect, but 'CaptureScreen' should succeed on KWin.
+            
+            # Using logical slicing on physical image often results in small top-left crop on HiDPI.
+            # So we MUST scale.
+            
+            phy_x = int(rel_x * dpr)
+            phy_y = int(rel_y * dpr)
+            phy_w = int(geo.width() * dpr)
+            phy_h = int(geo.height() * dpr)
+            
+            screen_pixmap = pixmap.copy(phy_x, phy_y, phy_w, phy_h)
+            screen_pixmap.setDevicePixelRatio(dpr)
+            
+            snipper = SnippingWidget(screen_pixmap, geo.x(), geo.y(), geo.width(), geo.height())
+            snipper.selection_started.connect(self.on_selection_started)
+            snipper.closed.connect(self.on_snipper_closed)
+            
+            if snipper.windowHandle():
+                snipper.windowHandle().setScreen(screen)
+            
+            snipper.show()
+            self.snippers.append(snipper)
+
+    def on_selection_started(self):
+        sender = self.sender()
+        for snipper in self.snippers:
+            if snipper != sender:
+                snipper.clear_selection()
+
+    def on_snipper_closed(self):
+        if self.snippers:
+            self.close_all_snippers()
+
+    def close_all_snippers(self):
+        if not self.snippers:
+            return
+        
+        current_snippers = self.snippers
+        self.snippers = []
+        
+        for snipper in current_snippers:
+            snipper.close()
 
     def run(self):
         # Allow Ctrl+C to kill

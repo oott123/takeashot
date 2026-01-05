@@ -7,11 +7,7 @@ from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QBuffer, QIODevic
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QImage, QCursor, QBrush, QPen, QGuiApplication
 
 class ScreenshotBackend:
-    def capture(self):
-        """
-        Captures the screen using KWin DBus interface.
-        Returns a QPixmap.
-        """
+    def _capture_internal(self, method_name, *args):
         try:
             bus = dbus.SessionBus()
             obj = bus.get_object('org.kde.KWin', '/org/kde/KWin/ScreenShot2')
@@ -20,68 +16,52 @@ class ScreenshotBackend:
             with tempfile.TemporaryFile() as tf:
                 fd = tf.fileno()
                 dbus_fd = dbus.types.UnixFd(fd)
-                options = {'native-resolution': True} # Try to request native resolution if supported
-
-                # Attempt to capture workspace (all screens) first, fallback to active screen
-                # Note: introspection would confirm if CaptureWorkspace exists. 
-                # screenshot_kwin used CaptureActiveScreen. 
-                # We will try CaptureWorkspace first to support multi-monitor.
-                try:
-                    print("Attempting CaptureWorkspace...")
-                    metadata = interface.CaptureWorkspace(options, dbus_fd)
-                except dbus.DBusException:
-                    print("CaptureWorkspace failed, falling back to CaptureActiveScreen...")
-                    metadata = interface.CaptureActiveScreen(options, dbus_fd)
+                options = {'native-resolution': True}
+                
+                method = getattr(interface, method_name)
+                # args need to be prepended to options, fd
+                # expected signature varies.
+                # CaptureWorkspace: (options, fd)
+                # CaptureScreen: (screen_name, options, fd)
+                
+                call_args = list(args) + [options, dbus_fd]
+                metadata = method(*call_args)
 
                 tf.seek(0)
                 data = tf.read()
 
                 if not data:
-                    print("Error: Empty data received")
+                    print(f"Error: Empty data received from {method_name}")
                     return None
 
                 width = int(metadata.get('width', 0))
                 height = int(metadata.get('height', 0))
                 stride = int(metadata.get('stride', 0))
-                fmt = int(metadata.get('format', 0))
-
+                
                 if width <= 0 or height <= 0:
                     print(f"Invalid dimensions: {width}x{height}")
                     return None
                 
-                # Assume ARGB32 for KWin (Format 5 or 6 usually)
-                # KWin typically returns BGRA. 
-                # QImage.Format_ARGB32 expects data in B G R A order (Little Endian).
-                # So we can use Format_ARGB32 directly.
-                
-                # We must keep a copy of data because QImage doesn't own it by default if passed as bytes
-                # But QImage(bytes, ...) needs the bytes to stay alive.
-                # We can copy the data into a bytearray or let QImage copy it.
-                # QImage(data, width, height, stride, format).copy() makes a deep copy.
-                
-                # Create QImage from raw data
                 img = QImage(data, width, height, stride, QImage.Format_ARGB32)
-                
-                # Make a deep copy so QImage owns the data
                 pixmap = QPixmap.fromImage(img.copy())
-                
-                # Setup HiDPI support: set device pixel ratio
-                # We use the primary screen's ratio. On most systems this is correct.
-                # For multi-monitor with mixed DPI, it's more complex, but this fixes the 
-                # "enlarged" issue in common HiDPI setups.
-                screen = QGuiApplication.primaryScreen()
-                ratio = screen.devicePixelRatio() if screen else 1.0
-                pixmap.setDevicePixelRatio(ratio)
+                # DO NOT set device pixel ratio here globally. Let caller handle it.
                 
                 return pixmap
 
         except Exception as e:
-            print(f"Capture failed: {e}")
+            print(f"Capture failed ({method_name}): {e}")
             return None
+
+    def capture_workspace(self):
+        return self._capture_internal('CaptureWorkspace')
+    
+    def capture_screen(self, screen_name):
+        return self._capture_internal('CaptureScreen', screen_name)
 
 
 class SnippingWidget(QWidget):
     closed = pyqtSignal()
+    selection_started = pyqtSignal()
     
     def __init__(self, pixmap, x, y, width, height):
         super().__init__()
@@ -100,6 +80,12 @@ class SnippingWidget(QWidget):
         
         self.setCursor(Qt.CrossCursor)
         self.show()
+
+    def clear_selection(self):
+        self.selection_rect = QRect()
+        self.active_handle = None
+        self.is_selecting = False
+        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -179,6 +165,8 @@ class SnippingWidget(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            self.selection_started.emit()
+            
             handle = self.get_handle_at(event.pos())
             if handle:
                 self.active_handle = handle
