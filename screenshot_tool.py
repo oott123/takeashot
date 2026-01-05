@@ -59,13 +59,21 @@ class ScreenshotBackend:
                 # We can copy the data into a bytearray or let QImage copy it.
                 # QImage(data, width, height, stride, format).copy() makes a deep copy.
                 
+                # Create QImage from raw data
                 img = QImage(data, width, height, stride, QImage.Format_ARGB32)
                 
-                # Check if we need to swap RB. 
-                # Usually KWin is BGRA. QImage.Format_ARGB32 is B G R A in memory.
-                # So no swap needed usually.
+                # Make a deep copy so QImage owns the data
+                pixmap = QPixmap.fromImage(img.copy())
                 
-                return QPixmap.fromImage(img.copy())
+                # Setup HiDPI support: set device pixel ratio
+                # We use the primary screen's ratio. On most systems this is correct.
+                # For multi-monitor with mixed DPI, it's more complex, but this fixes the 
+                # "enlarged" issue in common HiDPI setups.
+                screen = QGuiApplication.primaryScreen()
+                ratio = screen.devicePixelRatio() if screen else 1.0
+                pixmap.setDevicePixelRatio(ratio)
+                
+                return pixmap
 
         except Exception as e:
             print(f"Capture failed: {e}")

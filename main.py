@@ -1,11 +1,18 @@
 import sys
 import signal
-from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction, QMessageBox
-from PyQt5.QtGui import QIcon
+from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon, QGuiApplication
 from screenshot_tool import ScreenshotBackend, SnippingWidget
 
 class ScreenshotApp:
     def __init__(self):
+        # Enable High DPI scaling
+        if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+            QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+        if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+            QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+            
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
         
