@@ -1,0 +1,1 @@
+现在 flake.nix 是基于 buildFHSEnv 的，把它改成普通的 devShell 和 python 的 nix 包

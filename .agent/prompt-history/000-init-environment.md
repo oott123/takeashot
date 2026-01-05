@@ -1,0 +1,1 @@
+你在一个 nixos 环境里，现在，为这个文件夹写 flakes.nix ，构建一个 pyqt 的 FHSenv ，创建对应的 devshell ，激活 devshell 的时候，在当前目录下，创建 .venv 并激活。

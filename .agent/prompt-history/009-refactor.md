@@ -1,0 +1,1 @@
+重构 screenshot_tool.py ，拆分为 screenshot_backend.py 和 snipping_widget.py 两个文件，注意修改 main.py 的导入。
