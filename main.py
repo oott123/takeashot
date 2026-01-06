@@ -308,8 +308,8 @@ class ScreenshotApp(QObject):
                 # Clicked inside selection - will move on drag
                 self.active_handle = 'move'
             else:
-                # Clicked outside selection - no action
-                self.active_handle = None
+                # Clicked outside selection - expand selection to include the point
+                self.expand_selection_to_point(global_pos)
         else:
             # No selection state
             # Will start new selection on drag
@@ -442,6 +442,48 @@ class ScreenshotApp(QObject):
         if self.selection_rect.contains(global_pos):
             return 'move'
         return None
+    
+    def expand_selection_to_point(self, point):
+        """
+        将选区扩大到包含指定点
+        
+        扩大策略：
+        1. 如果扩大一个方向就能覆盖点，则只扩大一个方向
+        2. 如果扩大一个方向不能覆盖，则扩大两个方向
+        """
+        if self.selection_rect.isNull():
+            return
+        
+        r = self.selection_rect
+        
+        # 检查点是否在选区内
+        if r.contains(point):
+            return
+        
+        # 计算新的边界
+        new_left = r.left()
+        new_right = r.right()
+        new_top = r.top()
+        new_bottom = r.bottom()
+        
+        # 根据点的位置决定扩大哪些方向
+        if point.x() < r.left():
+            new_left = point.x()
+        elif point.x() > r.right():
+            new_right = point.x()
+        
+        if point.y() < r.top():
+            new_top = point.y()
+        elif point.y() > r.bottom():
+            new_bottom = point.y()
+        
+        # 创建新的选区
+        self.selection_rect = QRect(new_left, new_top, 
+                                     new_right - new_left, 
+                                     new_bottom - new_top)
+        
+        # 更新界面
+        self.update_snippets()
     
     def get_pending_selection_rect(self):
         """获取拟选中矩形"""
