@@ -91,16 +91,20 @@ class SnippingWidget(QWidget):
             if local_handle.intersects(self.rect()):
                 painter.drawRect(local_handle)
 
+    def handle_cancel_or_exit(self):
+        """Handle cancel or exit operation for both right-click and Esc key."""
+        # If there's a pending selection, exit directly
+        if not self.controller.get_pending_selection_rect().isNull():
+            QTimer.singleShot(0, self.close)
+        # If there's a real selection, cancel it; otherwise exit
+        elif not self.controller.cancel_selection():
+            QTimer.singleShot(0, self.close)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.controller.on_mouse_press(event.globalPos())
         elif event.button() == Qt.RightButton:
-            # If there's a pending selection, exit directly
-            if not self.controller.get_pending_selection_rect().isNull():
-                QTimer.singleShot(0, self.close)
-            # If there's a real selection, cancel it; otherwise exit
-            elif not self.controller.cancel_selection():
-                QTimer.singleShot(0, self.close)
+            self.handle_cancel_or_exit()
 
     def mouseMoveEvent(self, event):
         # Forward move to controller to update active handle / selection
