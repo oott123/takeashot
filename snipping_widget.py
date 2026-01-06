@@ -32,24 +32,34 @@ class SnippingWidget(QWidget):
         # We want everything DARK except the selection INTERSECTED with this screen
         overlay_color = QColor(0, 0, 0, 100) # Semi-transparent black
         
-        global_sel = self.controller.selection_rect
-        if global_sel.isNull():
-            painter.fillRect(self.rect(), overlay_color)
-        else:
-            # We need to draw the global selection in local coordinates.
-            # Local (0,0) is self.screen_geometry.topLeft() in global space.
-            # So, local_rect = global_rect.translated(-self.screen_geometry.topLeft())
-            
-            # However, we want to draw the *entire* overlay logic based on the local view of the global state.
-            
-            # Let's define the local selection rect
+        # Check for pending (snap) selection first
+        pending_sel = self.controller.get_pending_selection_rect()
+        if not pending_sel.isNull():
+            # Draw pending selection (snap preview)
             offset = -self.screen_geometry.topLeft()
-            local_sel = global_sel.translated(offset)
+            local_pending = pending_sel.translated(offset)
+            
+            # Draw overlay around the pending selection
+            region_all = QRegion(self.rect())
+            region_pending = QRegion(local_pending)
+            region_overlay = region_all.subtracted(region_pending)
+            
+            for rect in region_overlay.rects():
+                painter.fillRect(rect, overlay_color)
+            
+            # Draw pending selection border (same color as real selection)
+            pen = QPen(QColor(0, 120, 215), 1)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(local_pending)
+            
+            # Don't draw handles for pending selection
+        elif not self.controller.selection_rect.isNull():
+            # Draw real selection
+            offset = -self.screen_geometry.topLeft()
+            local_sel = self.controller.selection_rect.translated(offset)
             
             # Draw overlay around the selection
-            # An easy way is to use QRegion subtraction, but rects are faster.
-            # We effectively want to fill self.rect() MINUS local_sel
-            
             region_all = QRegion(self.rect())
             region_sel = QRegion(local_sel)
             region_overlay = region_all.subtracted(region_sel)
@@ -57,7 +67,7 @@ class SnippingWidget(QWidget):
             for rect in region_overlay.rects():
                 painter.fillRect(rect, overlay_color)
             
-            # Draw selection border (of the full global rect, clipped by window)
+            # Draw selection border
             pen = QPen(QColor(0, 120, 215), 1)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
@@ -65,6 +75,9 @@ class SnippingWidget(QWidget):
             
             # Draw resize handles
             self.draw_handles(painter, offset)
+        else:
+            # No selection at all
+            painter.fillRect(self.rect(), overlay_color)
 
     def draw_handles(self, painter, offset):
         handles = self.controller.get_handle_rects()

@@ -65,6 +65,7 @@ class ScreenshotApp(QObject):
         # Window snapping state
         self.windows = []  # List of window dictionaries from KWin
         self.pending_window = None  # Window under mouse (snapping preview)
+        self.pending_selection_rect = QRect()  # Pending (snap) selection rectangle (not real selection)
         self.window_lister = None  # Window lister instance
         self.snapping_enabled = False  # Whether window snapping is active
 
@@ -172,9 +173,10 @@ class ScreenshotApp(QObject):
     def _on_windows_ready(self, windows):
         """窗口列表获取完成回调"""
         if windows:
-            self.windows = windows
+            # Sort windows by area (smallest first) for snapping priority
+            self.windows = sorted(windows, key=lambda w: w['width'] * w['height'])
             self.snapping_enabled = True
-            print(f"Window snapping enabled with {len(windows)} windows")
+            print(f"Window snapping enabled with {len(windows)} windows (sorted by size)")
         else:
             self.windows = []
             self.snapping_enabled = False
@@ -268,42 +270,49 @@ class ScreenshotApp(QObject):
         print(f"Captured {sel_rect.width()}x{sel_rect.height()} logical ({target_w_phys}x{target_h_phys} physical) to clipboard.")
 
     def on_mouse_press(self, global_pos):
-        # Check for resize handles first
-        handle = self.get_handle_at(global_pos)
-        if handle:
-            self.active_handle = handle
-            self.drag_start_pos = global_pos
-            self.rect_start_geometry = self.selection_rect
-            self.is_selecting = True
-        else:
-            # If we have a pending window (snapping preview), confirm selection
-            if self.pending_window:
-                self.pending_window = None
-                # Selection is already set to window geometry
-            else:
-                # Start new selection from scratch
-                self.active_handle = 'new'
-                self.origin = global_pos
-                self.selection_rect = QRect(self.origin, QSize(0,0))
+        # Check for resize handles first (only if we have real selection)
+        if not self.pending_selection_rect.isNull():
+            handle = self.get_handle_at(global_pos)
+            if handle:
+                self.active_handle = handle
+                self.drag_start_pos = global_pos
+                self.rect_start_geometry = self.selection_rect
                 self.is_selecting = True
+                self.update_snippets()
+                return
+        
+        # If we have a pending selection and click inside it, confirm it
+        if not self.pending_selection_rect.isNull() and self.pending_selection_rect.contains(global_pos):
+            # Confirm pending selection as real selection
+            self.selection_rect = QRect(self.pending_selection_rect)
+            self.pending_selection_rect = QRect()
+            self.pending_window = None
+        else:
+            # Clear any pending selection and start new selection from scratch
+            self.pending_selection_rect = QRect()
+            self.pending_window = None
+            self.active_handle = 'new'
+            self.origin = global_pos
+            self.selection_rect = QRect(self.origin, QSize(0,0))
+            self.is_selecting = True
         self.update_snippets()
 
     def on_mouse_move(self, global_pos):
         if not self.is_selecting:
-            # Window snapping: if no selection and snapping enabled, check if mouse is over a window
+            # Window snapping: if no real selection and snapping enabled, check if mouse is over a window
             if self.snapping_enabled and self.selection_rect.isNull():
                 snapped_window = self._get_window_at(global_pos)
                 if snapped_window and snapped_window != self.pending_window:
-                    # Set selection to window geometry (snapping preview)
+                    # Set pending selection to window geometry (snapping preview)
                     self.pending_window = snapped_window
                     # Convert coordinates to integers
                     x, y, w, h = int(snapped_window['x']), int(snapped_window['y']), int(snapped_window['width']), int(snapped_window['height'])
-                    self.selection_rect = QRect(x, y, w, h)
+                    self.pending_selection_rect = QRect(x, y, w, h)
                     self.update_snippets()
                 elif not snapped_window and self.pending_window:
                     # Mouse left the window, clear preview
                     self.pending_window = None
-                    self.selection_rect = QRect()
+                    self.pending_selection_rect = QRect()
                     self.update_snippets()
             return
 
@@ -311,6 +320,7 @@ class ScreenshotApp(QObject):
             # If we had a pending window, clear it when user starts dragging
             if self.pending_window:
                 self.pending_window = None
+                self.pending_selection_rect = QRect()
             self.selection_rect = QRect(self.origin, global_pos).normalized()
         elif self.active_handle == 'move':
             delta = global_pos - self.drag_start_pos
@@ -342,6 +352,10 @@ class ScreenshotApp(QObject):
             snipper.update()
 
     def get_handle_rects(self):
+        # Only show handles for real selection, not pending selection
+        if self.selection_rect.isNull():
+            return {}
+            
         r = self.selection_rect
         s = self.RESIZE_HANDLE_SIZE
         hs = s // 2
@@ -358,6 +372,7 @@ class ScreenshotApp(QObject):
         }
 
     def get_handle_at(self, global_pos):
+        # Only allow handle interaction for real selection
         if self.selection_rect.isNull():
             return None
             
@@ -368,6 +383,10 @@ class ScreenshotApp(QObject):
         if self.selection_rect.contains(global_pos):
             return 'move'
         return None
+    
+    def get_pending_selection_rect(self):
+        """获取拟选中矩形"""
+        return self.pending_selection_rect
 
     def on_snipper_closed(self):
         if self.snippers:
@@ -385,16 +404,24 @@ class ScreenshotApp(QObject):
 
     def cancel_selection(self):
         """取消当前选区，返回是否成功取消"""
+        # Cancel real selection first
         if not self.selection_rect.isNull():
             self.selection_rect = QRect()
+            self.update_snippets()
+            return True
+        
+        # If no real selection, cancel pending selection
+        if not self.pending_selection_rect.isNull():
+            self.pending_selection_rect = QRect()
             self.pending_window = None
             self.update_snippets()
             return True
+            
         return False
 
     def should_exit(self):
-        """判断是否应退出截图（无选区且无虚化窗口）"""
-        return self.selection_rect.isNull() and self.pending_window is None
+        """判断是否应退出截图（无选区且无拟选中）"""
+        return self.selection_rect.isNull() and self.pending_selection_rect.isNull()
 
     def run(self):
         # Allow Ctrl+C to kill
