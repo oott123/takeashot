@@ -14,73 +14,65 @@ class SnippingWidget(QWidget):
         self.setGeometry(x, y, width, height)
         self.full_pixmap = pixmap
         self.screen_geometry = QRect(x, y, width, height)
-
-        # Store reference to toolbar
-        self.toolbar = controller.toolbar
-
+        
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
         self.show()
 
     def paintEvent(self, event):
         painter = QPainter(self)
-
+        
         # 0. Fill background black (in case of geometry mismatch)
         painter.fillRect(self.rect(), Qt.black)
-
+        
         # 1. Draw the captured screen
         painter.drawPixmap(0, 0, self.full_pixmap)
-
+        
         # 2. Draw overlay
         # We want everything DARK except the selection INTERSECTED with this screen
         overlay_color = QColor(0, 0, 0, 100) # Semi-transparent black
-
+        
         # Check for pending (snap) selection first
         pending_sel = self.controller.get_pending_selection_rect()
         if not pending_sel.isNull():
             # Draw pending selection (snap preview)
             offset = -self.screen_geometry.topLeft()
             local_pending = pending_sel.translated(offset)
-
+            
             # Draw overlay around the pending selection
             region_all = QRegion(self.rect())
             region_pending = QRegion(local_pending)
             region_overlay = region_all.subtracted(region_pending)
-
+            
             for rect in region_overlay.rects():
                 painter.fillRect(rect, overlay_color)
-
+            
             # Draw pending selection border (same color as real selection)
             pen = QPen(QColor(0, 120, 215), 1)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(local_pending)
-
+            
             # Don't draw handles for pending selection
         elif not self.controller.selection_rect.isNull():
             # Draw real selection
             offset = -self.screen_geometry.topLeft()
             local_sel = self.controller.selection_rect.translated(offset)
-
+            
             # Draw overlay around the selection
             region_all = QRegion(self.rect())
             region_sel = QRegion(local_sel)
             region_overlay = region_all.subtracted(region_sel)
-
+            
             for rect in region_overlay.rects():
                 painter.fillRect(rect, overlay_color)
-
-            # 3. NEW: Draw annotations (inside selection)
-            painter.setClipRect(local_sel)
-            self.controller.tool_manager.render_annotations(painter, offset, self.controller.selection_rect)
-            painter.setClipping(False)
-
+            
             # Draw selection border
             pen = QPen(QColor(0, 120, 215), 1)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(local_sel)
-
+            
             # Draw resize handles
             self.draw_handles(painter, offset)
         else:
@@ -154,15 +146,3 @@ class SnippingWidget(QWidget):
     def closeEvent(self, event):
         self.closed.emit()
         super().closeEvent(event)
-
-    def update_toolbar_visibility(self):
-        """Update toolbar visibility based on selection state."""
-        if not self.controller.selection_rect.isNull():
-            # Show toolbar
-            self.toolbar.show_for_selection(
-                self.controller.selection_rect,
-                self.screen_geometry
-            )
-        else:
-            # Hide toolbar
-            self.toolbar.hide_toolbar()
