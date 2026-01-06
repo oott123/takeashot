@@ -134,6 +134,15 @@ class SnippingWidget(QWidget):
             self.controller.capture_selection()
             QTimer.singleShot(0, self.close)
 
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            # Only handle double click if there's a real selection
+            if not self.controller.selection_rect.isNull():
+                # Check if double click is inside the selection
+                if self.controller.selection_rect.contains(event.globalPos()):
+                    self.controller.capture_selection()
+                    QTimer.singleShot(0, self.close)
+
     def closeEvent(self, event):
         self.closed.emit()
         super().closeEvent(event)
