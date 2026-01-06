@@ -95,8 +95,11 @@ class SnippingWidget(QWidget):
         if event.button() == Qt.LeftButton:
             self.controller.on_mouse_press(event.globalPos())
         elif event.button() == Qt.RightButton:
-            # If there's a selection, cancel it; otherwise exit
-            if not self.controller.cancel_selection():
+            # If there's a pending selection, exit directly
+            if not self.controller.get_pending_selection_rect().isNull():
+                QTimer.singleShot(0, self.close)
+            # If there's a real selection, cancel it; otherwise exit
+            elif not self.controller.cancel_selection():
                 QTimer.singleShot(0, self.close)
 
     def mouseMoveEvent(self, event):
