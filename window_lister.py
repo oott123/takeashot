@@ -48,6 +48,7 @@ class WindowLister(QObject):
     def __init__(self):
         super().__init__()
         self.receiver = None
+        self.receiver_path = None
         self.timeout_timer = None
         self.script_id = None
         self.temp_file = None
@@ -57,14 +58,17 @@ class WindowLister(QObject):
         try:
             # 获取进程ID用于DBus服务命名（添加前缀避免纯数字组件）
             pid = os.getpid()
+            timestamp = int(time.time() * 1000)
             receiver_name = f"com.takeashot.screenshot.pid_{pid}"
+            receiver_path = f"/Receiver_{timestamp}"
             
             # 注册DBus接收器，显式传递mainloop参数
             from dbus.mainloop.pyqt5 import DBusQtMainLoop
             bus = dbus.SessionBus(mainloop=DBusQtMainLoop())
             
             bus_name = dbus.service.BusName(receiver_name, bus)
-            self.receiver = WindowListReceiver(bus, "/Receiver")
+            self.receiver = WindowListReceiver(bus, receiver_path)
+            self.receiver_path = receiver_path
             self.receiver.windows_received.connect(self._on_windows_received)
             
             # 生成KWin脚本
@@ -85,7 +89,7 @@ for (var i = 0; i < list.length; i++) {{
         }});
     }}
 }}
-callDBus("{receiver_name}", "/Receiver", "com.takeashot.Receiver", "receive", JSON.stringify(res));
+callDBus("{receiver_name}", "{receiver_path}", "com.takeashot.Receiver", "receive", JSON.stringify(res));
 """
             
             # 写入临时文件
@@ -158,5 +162,11 @@ callDBus("{receiver_name}", "/Receiver", "com.takeashot.Receiver", "receive", JS
                 pass
             self.temp_file = None
         
-        # 释放接收器
-        self.receiver = None
+        # 移除DBus接收器对象
+        if self.receiver:
+            try:
+                self.receiver.remove_from_connection()
+            except:
+                pass
+            self.receiver = None
+            self.receiver_path = None
