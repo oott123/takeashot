@@ -4,4 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "dbus-python>=1.4.0",
+    "pillow>=12.1.0",
+    "pyqt5>=5.15.11",
+    "pyqt5-sip>=12.17.2",
+    "sip>=6.15.1",
+]
