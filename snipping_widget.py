@@ -125,9 +125,7 @@ class SnippingWidget(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            # If there's a selection, cancel it; otherwise exit
-            if not self.controller.cancel_selection():
-                QTimer.singleShot(0, self.close)
+            self.handle_cancel_or_exit()
         elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             self.controller.capture_selection()
             QTimer.singleShot(0, self.close)

@@ -1,0 +1,1 @@
+@.agent/rules/read-design-doc.md
