@@ -6,6 +6,8 @@ from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
 from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWidget
 from window_lister import WindowLister
+from annotations import FreehandTool, RectangleTool, LineTool
+from toolbar import AnnotationToolbar
 
 # Enable High DPI scaling - MUST be set before QApplication creation
 if hasattr(Qt, 'AA_EnableHighDpiScaling'):
@@ -76,6 +78,12 @@ class ScreenshotApp(QObject):
 
         # Constants
         self.RESIZE_HANDLE_SIZE = 8
+
+        # Annotation state
+        self.tool_manager = ToolManager()
+        self.toolbar = AnnotationToolbar()
+        self.toolbar.tool_selected.connect(self.on_tool_selected)
+        self.toolbar.clear_requested.connect(self.on_clear_annotations)
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -261,8 +269,13 @@ class ScreenshotApp(QObject):
             # Convert pixmap to QImage to bypass DPR interpretation issues
             # QPixmap.toImage() gives raw physical pixels
             src_image = snipper.full_pixmap.toImage()
-            
+
             painter.drawImage(target_rect, src_image, source_rect)
+
+        # Render annotations onto the screenshot
+        painter.setRenderHint(QPainter.Antialiasing)
+        offset = -sel_rect.topLeft()
+        self.tool_manager.render_annotations(painter, offset, sel_rect)
 
         painter.end()
 
@@ -276,22 +289,28 @@ class ScreenshotApp(QObject):
         print(f"Captured {sel_rect.width()}x{sel_rect.height()} logical ({target_w_phys}x{target_h_phys} physical) to clipboard.")
 
     def on_mouse_press(self, global_pos):
+        # Check if this is an annotation event
+        if self.is_annotation_event(global_pos):
+            self.tool_manager.start_annotation(global_pos, self.selection_rect)
+            self.update_snippets()
+            return
+
         # Record press position for click vs drag detection
         self.click_start_pos = global_pos
         self.is_dragging = False
         self.is_selecting = True  # Track that mouse is down, but don't know if drag yet
-        
+
         # Store initial state in case it becomes a drag
         self.drag_start_pos = global_pos
         self.rect_start_geometry = QRect(self.selection_rect)
-        
+
         # Check for resize handles (ONLY if we have real selection) - FIX BUG
         if not self.selection_rect.isNull():
             handle = self.get_handle_at(global_pos)
             if handle:
                 self.active_handle = handle
                 return
-        
+
         # Determine action based on current state
         if not self.pending_selection_rect.isNull():
             # Pending selection state
@@ -315,10 +334,16 @@ class ScreenshotApp(QObject):
             # Will start new selection on drag
             self.active_handle = 'new'
             self.origin = global_pos
-        
+
         self.update_snippets()
 
     def on_mouse_move(self, global_pos):
+        # Handle annotation drawing
+        if self.tool_manager.is_drawing:
+            self.tool_manager.update_annotation(global_pos, self.selection_rect)
+            self.update_snippets()
+            return
+
         if not self.is_selecting:
             # Window snapping: if no real selection and snapping enabled, check if mouse is over a window
             if self.snapping_enabled and self.selection_rect.isNull():
@@ -339,7 +364,7 @@ class ScreenshotApp(QObject):
 
         # Calculate distance from click start
         distance = (global_pos - self.click_start_pos).manhattanLength()
-        
+
         # Check if movement exceeds threshold (becomes a drag)
         if not self.is_dragging and distance > self.MOUSE_DRAG_THRESHOLD:
             self.is_dragging = True
@@ -351,7 +376,7 @@ class ScreenshotApp(QObject):
             if self.active_handle == 'confirm_pending':
                 self.active_handle = 'new'
                 self.origin = self.click_start_pos
-        
+
         # Only process drag operations if we've exceeded threshold
         if self.is_dragging:
             if self.active_handle == 'new':
@@ -366,24 +391,30 @@ class ScreenshotApp(QObject):
                 r = self.rect_start_geometry
                 dx = global_pos.x() - self.drag_start_pos.x()
                 dy = global_pos.y() - self.drag_start_pos.y()
-                
+
                 new_r = QRect(r)
-                
+
                 if 'l' in self.active_handle: new_r.setLeft(r.left() + dx)
                 if 'r' in self.active_handle: new_r.setRight(r.right() + dx)
                 if 't' in self.active_handle: new_r.setTop(r.top() + dy)
                 if 'b' in self.active_handle: new_r.setBottom(r.bottom() + dy)
-                
+
                 self.selection_rect = new_r.normalized()
             # 'confirm_pending' handle does nothing during drag (cleared when drag starts)
-            
+
             self.update_snippets()
 
     def on_mouse_release(self):
+        # Finish annotation if drawing
+        if self.tool_manager.is_drawing:
+            self.tool_manager.finish_annotation(self.drag_start_pos, self.selection_rect)
+            self.update_snippets()
+            return
+
         # Determine if this was a click or a drag
         distance = (self.drag_start_pos - self.click_start_pos).manhattanLength()
         was_drag = distance > self.MOUSE_DRAG_THRESHOLD
-        
+
         if not was_drag:
             # This was a CLICK - execute click-based actions based on state
             if self.active_handle == 'confirm_pending':
@@ -398,17 +429,19 @@ class ScreenshotApp(QObject):
         else:
             # This was a DRAG - finalize the drag operation
             self.selection_rect = self.selection_rect.normalized()
-        
+
         # Reset selection state
         self.is_selecting = False
         self.is_dragging = False
         self.active_handle = None
-        
+
         self.update_snippets()
 
     def update_snippets(self):
         for snipper in self.snippers:
             snipper.update()
+            # Update toolbar visibility (only need to do this once, but update all for simplicity)
+            snipper.update_toolbar_visibility()
 
     def get_handle_rects(self):
         # Only show handles for real selection, not pending selection
@@ -508,17 +541,37 @@ class ScreenshotApp(QObject):
         # Cancel real selection first
         if not self.selection_rect.isNull():
             self.selection_rect = QRect()
+            self.tool_manager.clear_all()  # Clear annotations
             self.update_snippets()
             return True
-        
+
         # If no real selection, cancel pending selection
         if not self.pending_selection_rect.isNull():
             self.pending_selection_rect = QRect()
             self.pending_window = None
             self.update_snippets()
             return True
-            
+
         return False
+
+    def on_tool_selected(self, tool_type: str) -> None:
+        """Handle tool selection from toolbar."""
+        self.tool_manager.set_tool(tool_type)
+
+    def on_clear_annotations(self) -> None:
+        """Handle clear annotations request."""
+        self.tool_manager.clear_all()
+        self.update_snippets()
+
+    def has_active_tool(self) -> bool:
+        """Check if an annotation tool is active."""
+        return self.tool_manager.tool_type is not None
+
+    def is_annotation_event(self, global_pos: QPoint) -> bool:
+        """Check if mouse event should be handled as annotation."""
+        return (self.has_active_tool() and
+                not self.selection_rect.isNull() and
+                self.selection_rect.contains(global_pos))
 
     def should_exit(self):
         """判断是否应退出截图（无选区且无拟选中）"""
@@ -528,6 +581,68 @@ class ScreenshotApp(QObject):
         # Allow Ctrl+C to kill
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         sys.exit(self.app.exec_())
+
+
+class ToolManager:
+    """Manages annotation tools and state."""
+
+    def __init__(self):
+        self.current_tool = None  # Active tool instance
+        self.tool_type = None  # 'freehand', 'rectangle', 'line'
+        self.annotations = []  # List of completed annotations
+        self.is_drawing = False  # Currently drawing
+
+    def set_tool(self, tool_type: str) -> None:
+        """Set the active tool type."""
+        self.tool_type = tool_type
+        self.current_tool = None  # Reset current instance
+
+    def clear_all(self) -> None:
+        """Clear all annotations."""
+        self.annotations.clear()
+        self.current_tool = None
+        self.is_drawing = False
+
+    def start_annotation(self, pos: QPoint, selection_rect: QRect) -> None:
+        """Start a new annotation."""
+        if not self.tool_type:
+            return
+
+        # Create new tool instance
+        if self.tool_type == 'freehand':
+            self.current_tool = FreehandTool()
+        elif self.tool_type == 'rectangle':
+            self.current_tool = RectangleTool()
+        elif self.tool_type == 'line':
+            self.current_tool = LineTool()
+
+        if self.current_tool:
+            self.current_tool.on_mouse_press(pos, selection_rect)
+            self.is_drawing = True
+
+    def update_annotation(self, pos: QPoint, selection_rect: QRect) -> None:
+        """Update current annotation."""
+        if self.current_tool and self.is_drawing:
+            self.current_tool.on_mouse_move(pos, selection_rect)
+
+    def finish_annotation(self, pos: QPoint, selection_rect: QRect) -> None:
+        """Finish current annotation."""
+        if self.current_tool and self.is_drawing:
+            self.current_tool.on_mouse_release(pos, selection_rect)
+            if self.current_tool.is_complete():
+                self.annotations.append(self.current_tool)
+            self.current_tool = None
+            self.is_drawing = False
+
+    def render_annotations(self, painter: QPainter, offset: QPoint, selection_rect: QRect) -> None:
+        """Render all annotations."""
+        # Render completed annotations
+        for annotation in self.annotations:
+            annotation.paint(painter, offset, selection_rect)
+
+        # Render current annotation being drawn
+        if self.current_tool:
+            self.current_tool.paint(painter, offset, selection_rect)
 
 if __name__ == "__main__":
     app = ScreenshotApp()

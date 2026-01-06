@@ -1,9 +1,12 @@
 import dbus
-import dbus.mainloop.pyqt5
-
-# 在导入dbus.service之前设置DBus主循环
-from dbus.mainloop.pyqt5 import DBusQtMainLoop
-DBusQtMainLoop(set_as_default=True)
+try:
+    import dbus.mainloop.pyqt5
+    # 在导入dbus.service之前设置DBus主循环
+    from dbus.mainloop.pyqt5 import DBusQtMainLoop
+    DBusQtMainLoop(set_as_default=True)
+except ImportError:
+    print("Warning: dbus.mainloop.pyqt5 not found, window snapping will be disabled")
+    DBusQtMainLoop = None
 
 import tempfile
 import os
