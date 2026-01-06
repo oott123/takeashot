@@ -62,6 +62,11 @@ class ScreenshotApp(QObject):
         self.rect_start_geometry = QRect()
         self.origin = QPoint()
         
+        # Mouse tracking for click vs drag detection
+        self.is_dragging = False
+        self.click_start_pos = QPoint()
+        self.MOUSE_DRAG_THRESHOLD = 5
+        
         # Window snapping state
         self.windows = []  # List of window dictionaries from KWin
         self.pending_window = None  # Window under mouse (snapping preview)
@@ -84,6 +89,8 @@ class ScreenshotApp(QObject):
         self.selection_rect = QRect()
         self.is_selecting = False
         self.active_handle = None
+        self.is_dragging = False
+        self.click_start_pos = QPoint()
         
         screens = QGuiApplication.screens()
         if not screens:
@@ -269,31 +276,46 @@ class ScreenshotApp(QObject):
         print(f"Captured {sel_rect.width()}x{sel_rect.height()} logical ({target_w_phys}x{target_h_phys} physical) to clipboard.")
 
     def on_mouse_press(self, global_pos):
-        # Check for resize handles first (only if we have real selection)
-        if not self.pending_selection_rect.isNull():
+        # Record press position for click vs drag detection
+        self.click_start_pos = global_pos
+        self.is_dragging = False
+        self.is_selecting = True  # Track that mouse is down, but don't know if drag yet
+        
+        # Store initial state in case it becomes a drag
+        self.drag_start_pos = global_pos
+        self.rect_start_geometry = QRect(self.selection_rect)
+        
+        # Check for resize handles (ONLY if we have real selection) - FIX BUG
+        if not self.selection_rect.isNull():
             handle = self.get_handle_at(global_pos)
             if handle:
                 self.active_handle = handle
-                self.drag_start_pos = global_pos
-                self.rect_start_geometry = self.selection_rect
-                self.is_selecting = True
-                self.update_snippets()
                 return
         
-        # If we have a pending selection and click inside it, confirm it
-        if not self.pending_selection_rect.isNull() and self.pending_selection_rect.contains(global_pos):
-            # Confirm pending selection as real selection
-            self.selection_rect = QRect(self.pending_selection_rect)
-            self.pending_selection_rect = QRect()
-            self.pending_window = None
+        # Determine action based on current state
+        if not self.pending_selection_rect.isNull():
+            # Pending selection state
+            if self.pending_selection_rect.contains(global_pos):
+                # Clicked inside pending - will confirm on mouseup if it's a click
+                self.active_handle = 'confirm_pending'
+            else:
+                # Clicked outside pending - will start new selection on drag
+                self.active_handle = 'new'
+                self.origin = global_pos
+        elif not self.selection_rect.isNull():
+            # Has selection state
+            if self.selection_rect.contains(global_pos):
+                # Clicked inside selection - will move on drag
+                self.active_handle = 'move'
+            else:
+                # Clicked outside selection - no action
+                self.active_handle = None
         else:
-            # Clear any pending selection and start new selection from scratch
-            self.pending_selection_rect = QRect()
-            self.pending_window = None
+            # No selection state
+            # Will start new selection on drag
             self.active_handle = 'new'
             self.origin = global_pos
-            self.selection_rect = QRect(self.origin, QSize(0,0))
-            self.is_selecting = True
+        
         self.update_snippets()
 
     def on_mouse_move(self, global_pos):
@@ -315,35 +337,69 @@ class ScreenshotApp(QObject):
                     self.update_snippets()
             return
 
-        if self.active_handle == 'new':
-            # If we had a pending window, clear it when user starts dragging
+        # Calculate distance from click start
+        distance = (global_pos - self.click_start_pos).manhattanLength()
+        
+        # Check if movement exceeds threshold (becomes a drag)
+        if not self.is_dragging and distance > self.MOUSE_DRAG_THRESHOLD:
+            self.is_dragging = True
+            # Clear pending selection when starting a real drag
             if self.pending_window:
                 self.pending_window = None
                 self.pending_selection_rect = QRect()
-            self.selection_rect = QRect(self.origin, global_pos).normalized()
-        elif self.active_handle == 'move':
-            delta = global_pos - self.drag_start_pos
-            self.selection_rect = self.rect_start_geometry.translated(delta)
-        else:
-            # Resizing logic
-            r = self.rect_start_geometry
-            dx = global_pos.x() - self.drag_start_pos.x()
-            dy = global_pos.y() - self.drag_start_pos.y()
-            
-            new_r = QRect(r)
-            
-            if 'l' in self.active_handle: new_r.setLeft(r.left() + dx)
-            if 'r' in self.active_handle: new_r.setRight(r.right() + dx)
-            if 't' in self.active_handle: new_r.setTop(r.top() + dy)
-            if 'b' in self.active_handle: new_r.setBottom(r.bottom() + dy)
-            
-            self.selection_rect = new_r.normalized()
         
-        self.update_snippets()
+        # Only process drag operations if we've exceeded threshold
+        if self.is_dragging:
+            if self.active_handle == 'new':
+                # Creating new selection
+                self.selection_rect = QRect(self.origin, global_pos).normalized()
+            elif self.active_handle == 'move':
+                # Moving existing selection
+                delta = global_pos - self.drag_start_pos
+                self.selection_rect = self.rect_start_geometry.translated(delta)
+            elif self.active_handle in ['tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l']:
+                # Resizing selection
+                r = self.rect_start_geometry
+                dx = global_pos.x() - self.drag_start_pos.x()
+                dy = global_pos.y() - self.drag_start_pos.y()
+                
+                new_r = QRect(r)
+                
+                if 'l' in self.active_handle: new_r.setLeft(r.left() + dx)
+                if 'r' in self.active_handle: new_r.setRight(r.right() + dx)
+                if 't' in self.active_handle: new_r.setTop(r.top() + dy)
+                if 'b' in self.active_handle: new_r.setBottom(r.bottom() + dy)
+                
+                self.selection_rect = new_r.normalized()
+            # 'confirm_pending' handle does nothing during drag (cleared when drag starts)
+            
+            self.update_snippets()
 
     def on_mouse_release(self):
+        # Determine if this was a click or a drag
+        distance = (self.drag_start_pos - self.click_start_pos).manhattanLength()
+        was_drag = distance > self.MOUSE_DRAG_THRESHOLD
+        
+        if not was_drag:
+            # This was a CLICK - execute click-based actions based on state
+            if self.active_handle == 'confirm_pending':
+                # Pending selection state: clicked inside pending - confirm it
+                self.selection_rect = QRect(self.pending_selection_rect)
+                self.pending_selection_rect = QRect()
+                self.pending_window = None
+            elif self.active_handle == 'move':
+                # Has selection state: clicked inside selection - no action
+                pass
+            # All other click scenarios do nothing (no action)
+        else:
+            # This was a DRAG - finalize the drag operation
+            self.selection_rect = self.selection_rect.normalized()
+        
+        # Reset selection state
         self.is_selecting = False
-        self.selection_rect = self.selection_rect.normalized()
+        self.is_dragging = False
+        self.active_handle = None
+        
         self.update_snippets()
 
     def update_snippets(self):
