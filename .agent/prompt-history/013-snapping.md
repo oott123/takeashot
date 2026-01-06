@@ -15,3 +15,38 @@
 3. 获取窗口列表本身需要一定时间，所以在启动截图的时候，直接进入截图状态，然后异步发 dbus 获取，再异步等到
 获取完成之后，再启用吸附功能。
 4. 用 Qt 的主循环、事件来处理异步，不要像原型脚本里面那样自己启动一个主循环了，也不要自己开线程，用好 Qt 的机制。
+
+---
+
+Failed to start window list retrieval: module 'dbus' has no attribute 'mainloop'
+
+---
+
+Failed to start window list retrieval: Invalid bus name 'com.takeashot.screenshot.206224': a digit may not follow '.' except in a unique name starting with ':'
+
+---
+
+Failed to start window list retrieval: To make asynchronous calls, receive signals or export objects, D-Bus connections must be attached to a main loop by passing mainloop=... to the constructor or calling dbus.set_default_main_loop(...)
+
+---
+
+Failed to start window list retrieval: To make asynchronous calls, receive signals or export objects, D-Bus connections must be attached to a main loop by passing mainloop=... to the constructor or calling dbus.set_default_main_loop(...) 还是报这个错
+
+---
+
+Window snapping enabled with 9 windows
+Traceback (most recent call last):
+  File "/home/alice/Repos/takeashot/snipping_widget.py", line 104, in mouseMoveEvent
+    self.controller.on_mouse_move(global_pos)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/home/alice/Repos/takeashot/main.py", line 294, in on_mouse_move
+    snapped_window = self._get_window_at(global_pos)
+  File "/home/alice/Repos/takeashot/main.py", line 190, in _get_window_at
+    window_rect = QRect(x, y, w, h)
+TypeError: arguments did not match any overloaded call:
+  QRect(): too many arguments
+  QRect(aleft: int, atop: int, awidth: int, aheight: int): argument 1 has unexpected type 'float'
+  QRect(atopLeft: QPoint, abottomRight: QPoint): argument 1 has unexpected type 'float'
+  QRect(atopLeft: QPoint, asize: QSize): argument 1 has unexpected type 'float'
+  QRect(a0: QRect): argument 1 has unexpected type 'float'
+zsh: abort (core dumped)  python main.py

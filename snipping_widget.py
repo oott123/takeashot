@@ -82,7 +82,9 @@ class SnippingWidget(QWidget):
         if event.button() == Qt.LeftButton:
             self.controller.on_mouse_press(event.globalPos())
         elif event.button() == Qt.RightButton:
-            QTimer.singleShot(0, self.close)
+            # If there's a selection, cancel it; otherwise exit
+            if not self.controller.cancel_selection():
+                QTimer.singleShot(0, self.close)
 
     def mouseMoveEvent(self, event):
         # Forward move to controller to update active handle / selection
@@ -107,7 +109,9 @@ class SnippingWidget(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            QTimer.singleShot(0, self.close)
+            # If there's a selection, cancel it; otherwise exit
+            if not self.controller.cancel_selection():
+                QTimer.singleShot(0, self.close)
         elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             self.controller.capture_selection()
             QTimer.singleShot(0, self.close)

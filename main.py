@@ -5,6 +5,7 @@ from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize, QRectF
 from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
 from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWidget
+from window_lister import WindowLister
 
 # Enable High DPI scaling - MUST be set before QApplication creation
 if hasattr(Qt, 'AA_EnableHighDpiScaling'):
@@ -60,6 +61,12 @@ class ScreenshotApp(QObject):
         self.drag_start_pos = QPoint()
         self.rect_start_geometry = QRect()
         self.origin = QPoint()
+        
+        # Window snapping state
+        self.windows = []  # List of window dictionaries from KWin
+        self.pending_window = None  # Window under mouse (snapping preview)
+        self.window_lister = None  # Window lister instance
+        self.snapping_enabled = False  # Whether window snapping is active
 
         # Constants
         self.RESIZE_HANDLE_SIZE = 8
@@ -109,6 +116,7 @@ class ScreenshotApp(QObject):
         if all_success:
             print("Used per-screen capture.")
             self._launch_snippers(screen_pixmaps)
+            self._start_window_snapping()
             return
 
         # Fallback to workspace capture (stitched)
@@ -140,6 +148,7 @@ class ScreenshotApp(QObject):
             screen_pixmaps[screen] = screen_pixmap
 
         self._launch_snippers(screen_pixmaps)
+        self._start_window_snapping()
 
     def _launch_snippers(self, screen_pixmaps):
         for screen, pixmap in screen_pixmaps.items():
@@ -152,6 +161,37 @@ class ScreenshotApp(QObject):
                 
             snipper.show()
             self.snippers.append(snipper)
+
+    def _start_window_snapping(self):
+        """启动异步窗口列表获取，启用窗口吸附功能"""
+        print("Starting window list retrieval for snapping...")
+        self.window_lister = WindowLister()
+        self.window_lister.windows_ready.connect(self._on_windows_ready)
+        self.window_lister.get_windows_async()
+
+    def _on_windows_ready(self, windows):
+        """窗口列表获取完成回调"""
+        if windows:
+            self.windows = windows
+            self.snapping_enabled = True
+            print(f"Window snapping enabled with {len(windows)} windows")
+        else:
+            self.windows = []
+            self.snapping_enabled = False
+            print("Window snapping disabled (no windows retrieved)")
+
+    def _get_window_at(self, global_pos):
+        """获取鼠标位置下的窗口，如果没有则返回None"""
+        if not self.windows:
+            return None
+        
+        for window in self.windows:
+            # Convert coordinates to integers (KWin may return floats)
+            x, y, w, h = int(window['x']), int(window['y']), int(window['width']), int(window['height'])
+            window_rect = QRect(x, y, w, h)
+            if window_rect.contains(global_pos):
+                return window
+        return None
 
     def capture_selection(self):
         if self.selection_rect.isNull():
@@ -236,18 +276,41 @@ class ScreenshotApp(QObject):
             self.rect_start_geometry = self.selection_rect
             self.is_selecting = True
         else:
-            # Start new selection
-            self.active_handle = 'new'
-            self.origin = global_pos
-            self.selection_rect = QRect(self.origin, QSize(0,0))
-            self.is_selecting = True
+            # If we have a pending window (snapping preview), confirm selection
+            if self.pending_window:
+                self.pending_window = None
+                # Selection is already set to window geometry
+            else:
+                # Start new selection from scratch
+                self.active_handle = 'new'
+                self.origin = global_pos
+                self.selection_rect = QRect(self.origin, QSize(0,0))
+                self.is_selecting = True
         self.update_snippets()
 
     def on_mouse_move(self, global_pos):
         if not self.is_selecting:
+            # Window snapping: if no selection and snapping enabled, check if mouse is over a window
+            if self.snapping_enabled and self.selection_rect.isNull():
+                snapped_window = self._get_window_at(global_pos)
+                if snapped_window and snapped_window != self.pending_window:
+                    # Set selection to window geometry (snapping preview)
+                    self.pending_window = snapped_window
+                    # Convert coordinates to integers
+                    x, y, w, h = int(snapped_window['x']), int(snapped_window['y']), int(snapped_window['width']), int(snapped_window['height'])
+                    self.selection_rect = QRect(x, y, w, h)
+                    self.update_snippets()
+                elif not snapped_window and self.pending_window:
+                    # Mouse left the window, clear preview
+                    self.pending_window = None
+                    self.selection_rect = QRect()
+                    self.update_snippets()
             return
 
         if self.active_handle == 'new':
+            # If we had a pending window, clear it when user starts dragging
+            if self.pending_window:
+                self.pending_window = None
             self.selection_rect = QRect(self.origin, global_pos).normalized()
         elif self.active_handle == 'move':
             delta = global_pos - self.drag_start_pos
@@ -319,6 +382,19 @@ class ScreenshotApp(QObject):
         
         for snipper in current_snippers:
             snipper.close()
+
+    def cancel_selection(self):
+        """取消当前选区，返回是否成功取消"""
+        if not self.selection_rect.isNull():
+            self.selection_rect = QRect()
+            self.pending_window = None
+            self.update_snippets()
+            return True
+        return False
+
+    def should_exit(self):
+        """判断是否应退出截图（无选区且无虚化窗口）"""
+        return self.selection_rect.isNull() and self.pending_window is None
 
     def run(self):
         # Allow Ctrl+C to kill
