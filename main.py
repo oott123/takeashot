@@ -347,6 +347,10 @@ class ScreenshotApp(QObject):
             if self.pending_window:
                 self.pending_window = None
                 self.pending_selection_rect = QRect()
+            # If we were going to confirm pending but now dragging, start new selection instead
+            if self.active_handle == 'confirm_pending':
+                self.active_handle = 'new'
+                self.origin = self.click_start_pos
         
         # Only process drag operations if we've exceeded threshold
         if self.is_dragging:
