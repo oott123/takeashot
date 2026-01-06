@@ -73,9 +73,9 @@ class WindowLister(QObject):
             
             # 生成KWin脚本
             js_code = f"""
-var list = workspace.windowList ? workspace.windowList() : workspace.clientList();
+var list = workspace.stackingOrder ? workspace.stackingOrder : (workspace.windowList ? workspace.windowList() : workspace.clientList());
 var res = [];
-for (var i = 0; i < list.length; i++) {{
+for (var i = list.length - 1; i >= 0; i--) {{
     var w = list[i];
     if (w.normalWindow && !w.minimized) {{
         var geom = w.frameGeometry ? w.frameGeometry : {{ x: w.x, y: w.y, width: w.width, height: w.height }};

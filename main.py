@@ -173,10 +173,9 @@ class ScreenshotApp(QObject):
     def _on_windows_ready(self, windows):
         """窗口列表获取完成回调"""
         if windows:
-            # Sort windows by area (smallest first) for snapping priority
-            self.windows = sorted(windows, key=lambda w: w['width'] * w['height'])
+            self.windows = windows
             self.snapping_enabled = True
-            print(f"Window snapping enabled with {len(windows)} windows (sorted by size)")
+            print(f"Window snapping enabled with {len(windows)} windows")
         else:
             self.windows = []
             self.snapping_enabled = False
