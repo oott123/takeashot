@@ -99,11 +99,13 @@ class SnippingWidget(QWidget):
             painter.fillRect(self.rect(), overlay_color)
             
         # Update Toolbar Position
-        # We do this here to ensure it stays in sync with what is drawn, esp. during rapid drags
-        if not self.controller.selection_rect.isNull():
+        # Only show toolbar if the selection's bottom-right point is on this screen
+        # This prevents duplicate toolbars on multi-monitor setups
+        global_sel = self.controller.selection_rect
+        if not global_sel.isNull() and self.screen_geometry.contains(global_sel.bottomRight()):
              # Convert global selection rect to local coordinates
              offset = -self.screen_geometry.topLeft()
-             local_sel = self.controller.selection_rect.translated(offset)
+             local_sel = global_sel.translated(offset)
              self.toolbar.update_position(local_sel, self.rect())
         else:
              self.toolbar.hide()
