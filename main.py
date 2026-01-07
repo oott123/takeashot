@@ -5,7 +5,6 @@ from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize, QRectF
 from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
 from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWidget
-from toolbar_widget import ToolbarWidget
 from window_lister import WindowLister
 
 # Enable High DPI scaling - MUST be set before QApplication creation
@@ -77,9 +76,6 @@ class ScreenshotApp(QObject):
 
         # Constants
         self.RESIZE_HANDLE_SIZE = 8
-
-        # Toolbar widget
-        self.toolbar_widget = None
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -163,17 +159,14 @@ class ScreenshotApp(QObject):
         self._start_window_snapping()
 
     def _launch_snippers(self, screen_pixmaps):
-        # Create toolbar widget
-        self.toolbar_widget = ToolbarWidget()
-
         for screen, pixmap in screen_pixmaps.items():
             geo = screen.geometry()
             snipper = SnippingWidget(self, pixmap, geo.x(), geo.y(), geo.width(), geo.height())
             snipper.closed.connect(self.on_snipper_closed)
-
+            
             if snipper.windowHandle():
                 snipper.windowHandle().setScreen(screen)
-
+                
             snipper.show()
             self.snippers.append(snipper)
 
@@ -364,29 +357,26 @@ class ScreenshotApp(QObject):
             if self.active_handle == 'new':
                 # Creating new selection
                 self.selection_rect = QRect(self.origin, global_pos).normalized()
-                print(f"[DEBUG] Drag new: selection_rect=({self.selection_rect.x()}, {self.selection_rect.y()}) - ({self.selection_rect.right()}, {self.selection_rect.bottom()})")
             elif self.active_handle == 'move':
                 # Moving existing selection
                 delta = global_pos - self.drag_start_pos
                 self.selection_rect = self.rect_start_geometry.translated(delta)
-                print(f"[DEBUG] Drag move: selection_rect=({self.selection_rect.x()}, {self.selection_rect.y()}) - ({self.selection_rect.right()}, {self.selection_rect.bottom()})")
             elif self.active_handle in ['tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l']:
                 # Resizing selection
                 r = self.rect_start_geometry
                 dx = global_pos.x() - self.drag_start_pos.x()
                 dy = global_pos.y() - self.drag_start_pos.y()
-
+                
                 new_r = QRect(r)
-
+                
                 if 'l' in self.active_handle: new_r.setLeft(r.left() + dx)
                 if 'r' in self.active_handle: new_r.setRight(r.right() + dx)
                 if 't' in self.active_handle: new_r.setTop(r.top() + dy)
                 if 'b' in self.active_handle: new_r.setBottom(r.bottom() + dy)
-
+                
                 self.selection_rect = new_r.normalized()
-                print(f"[DEBUG] Drag resize: selection_rect=({self.selection_rect.x()}, {self.selection_rect.y()}) - ({self.selection_rect.right()}, {self.selection_rect.bottom()})")
             # 'confirm_pending' handle does nothing during drag (cleared when drag starts)
-
+            
             self.update_snippets()
 
     def on_mouse_release(self):
@@ -419,18 +409,6 @@ class ScreenshotApp(QObject):
     def update_snippets(self):
         for snipper in self.snippers:
             snipper.update()
-
-        # 更新工具条位置和显示状态
-        if self.toolbar_widget:
-            print(f"[DEBUG] update_snippets: selection_rect.isNull={self.selection_rect.isNull()}")
-            if self.selection_rect.isNull():
-                # 无选区，隐藏工具条
-                print(f"[DEBUG] Hiding toolbar")
-                self.toolbar_widget.hide()
-            else:
-                # 有选区，更新位置并显示
-                print(f"[DEBUG] Updating toolbar position")
-                self.update_toolbar_position()
 
     def get_handle_rects(self):
         # Only show handles for real selection, not pending selection
@@ -511,68 +489,6 @@ class ScreenshotApp(QObject):
         """获取拟选中矩形"""
         return self.pending_selection_rect
 
-    def update_toolbar_position(self):
-        """更新工具条位置"""
-        if not self.toolbar_widget or self.selection_rect.isNull():
-            print(f"[DEBUG] update_toolbar_position: early return - toolbar_widget={self.toolbar_widget is not None}, selection_rect.isNull={self.selection_rect.isNull()}")
-            return
-
-        # 工具条尺寸
-        toolbar_width = self.toolbar_widget.toolbar_width
-        toolbar_height = self.toolbar_widget.toolbar_height
-
-        # 间距
-        spacing = 5
-
-        # 获取所有屏幕的几何范围
-        screens = QGuiApplication.screens()
-        if not screens:
-            return
-
-        # 计算所有屏幕的边界
-        min_x = min(screen.geometry().x() for screen in screens)
-        min_y = min(screen.geometry().y() for screen in screens)
-        max_x = max(screen.geometry().right() for screen in screens)
-        max_y = max(screen.geometry().bottom() for screen in screens)
-
-        print(f"[DEBUG] Screen bounds: ({min_x}, {min_y}) to ({max_x}, {max_y})")
-        print(f"[DEBUG] Selection rect: ({self.selection_rect.x()}, {self.selection_rect.y()}) - ({self.selection_rect.right()}, {self.selection_rect.bottom()})")
-
-        # 策略1：选区外右下
-        # 位置：选区右下角 + 间距
-        pos_outside = QPoint(
-            self.selection_rect.right() + spacing,
-            self.selection_rect.bottom() + spacing
-        )
-
-        print(f"[DEBUG] pos_outside: ({pos_outside.x()}, {pos_outside.y()})")
-
-        # 检查是否在屏幕边界内
-        if (pos_outside.x() + toolbar_width <= max_x and
-            pos_outside.y() + toolbar_height <= max_y):
-            # 使用选区外位置
-            print(f"[DEBUG] Using outside position")
-            self.toolbar_widget.move(pos_outside)
-        else:
-            # 策略2：选区内右下
-            # 位置：选区右下角 - 工具条尺寸 - 间距
-            pos_inside = QPoint(
-                self.selection_rect.right() - toolbar_width - spacing,
-                self.selection_rect.bottom() - toolbar_height - spacing
-            )
-
-            # 确保不超出选区左和上边界
-            pos_inside.setX(max(pos_inside.x(), self.selection_rect.left()))
-            pos_inside.setY(max(pos_inside.y(), self.selection_rect.top()))
-
-            print(f"[DEBUG] Using inside position: ({pos_inside.x()}, {pos_inside.y()})")
-            self.toolbar_widget.move(pos_inside)
-
-        # 确保工具条在最上层
-        self.toolbar_widget.raise_()
-        self.toolbar_widget.show()
-        print(f"[DEBUG] Toolbar moved and shown")
-
     def on_snipper_closed(self):
         if self.snippers:
             self.close_all_snippers()
@@ -580,15 +496,10 @@ class ScreenshotApp(QObject):
     def close_all_snippers(self):
         if not self.snippers:
             return
-
-        # Close toolbar widget
-        if self.toolbar_widget:
-            self.toolbar_widget.close()
-            self.toolbar_widget = None
-
+        
         current_snippers = self.snippers
         self.snippers = []
-
+        
         for snipper in current_snippers:
             snipper.close()
 
