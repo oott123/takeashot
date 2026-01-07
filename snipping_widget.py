@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import QWidget, QApplication
 from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint
 from PyQt5.QtGui import QPainter, QColor, QBrush, QPen, QRegion
+from toolbar_widget import Toolbar
 
 class SnippingWidget(QWidget):
     closed = pyqtSignal()
@@ -17,7 +18,25 @@ class SnippingWidget(QWidget):
         
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
+        
+        # Toolbar
+        self.toolbar = Toolbar(self)
+        self.toolbar.hide()
+        
+        # Connect Toolbar Buttons
+        # Close/Cancel
+        self.toolbar.btn_close.clicked.connect(self.handle_cancel_or_exit)
+        # Capture
+        self.toolbar.btn_confirm.clicked.connect(self.handle_confirm_click)
+        # Save (Placeholder - treated as capture for now or no-op? Requirement says placeholder. Let's make it print or do nothing)
+        # self.toolbar.btn_save.clicked.connect(lambda: print("Save clicked"))
+        
         self.show()
+
+    def handle_confirm_click(self):
+        self.controller.capture_selection()
+        QTimer.singleShot(0, self.close)
+
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -78,6 +97,17 @@ class SnippingWidget(QWidget):
         else:
             # No selection at all
             painter.fillRect(self.rect(), overlay_color)
+            
+        # Update Toolbar Position
+        # We do this here to ensure it stays in sync with what is drawn, esp. during rapid drags
+        if not self.controller.selection_rect.isNull():
+             # Convert global selection rect to local coordinates
+             offset = -self.screen_geometry.topLeft()
+             local_sel = self.controller.selection_rect.translated(offset)
+             self.toolbar.update_position(local_sel, self.rect())
+        else:
+             self.toolbar.hide()
+
 
     def draw_handles(self, painter, offset):
         handles = self.controller.get_handle_rects()
