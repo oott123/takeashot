@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import QtQuick.Shapes 1.15
 
 Item {
     id: root
@@ -53,25 +54,16 @@ Item {
                     color: pointerBtn.hovered ? "#eee" : (pointerBtn.checked ? "#ddd" : "transparent")
                     border.color: pointerBtn.checked ? "#aaa" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 20; height: 20
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.fillStyle = "black";
-                        ctx.lineWidth = 1;
-                        ctx.beginPath();
-                        ctx.moveTo(6, 4);
-                        ctx.lineTo(14, 12);
-                        ctx.lineTo(10, 12);
-                        ctx.lineTo(13, 18);
-                        ctx.lineTo(11, 19);
-                        ctx.lineTo(8, 13);
-                        ctx.lineTo(4, 13);
-                        ctx.closePath();
-                        ctx.fill();
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M7 7l10 10 M16 7l-9 0l0 9" }
                     }
                 }
                 ToolTip.visible: hovered
@@ -90,19 +82,16 @@ Item {
                     color: pencilBtn.hovered ? "#eee" : (pencilBtn.checked ? "#ddd" : "transparent")
                     border.color: pencilBtn.checked ? "#aaa" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 20; height: 20
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.lineWidth = 2;
-                        ctx.lineCap = "round";
-                        ctx.beginPath();
-                        ctx.moveTo(4, 16);
-                        ctx.quadraticCurveTo(8, 4, 16, 4);
-                        ctx.stroke();
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4 M13.5 6.5l4 4" }
                     }
                 }
                 ToolTip.visible: hovered
@@ -121,19 +110,16 @@ Item {
                     color: lineBtn.hovered ? "#eee" : (lineBtn.checked ? "#ddd" : "transparent")
                     border.color: lineBtn.checked ? "#aaa" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 20; height: 20
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.lineWidth = 2;
-                        ctx.lineCap = "round";
-                        ctx.beginPath();
-                        ctx.moveTo(4, 16);
-                        ctx.lineTo(16, 4);
-                        ctx.stroke();
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M17 5l-10 14" }
                     }
                 }
                 ToolTip.visible: hovered
@@ -152,15 +138,16 @@ Item {
                     color: rectBtn.hovered ? "#eee" : (rectBtn.checked ? "#ddd" : "transparent")
                     border.color: rectBtn.checked ? "#aaa" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 20; height: 20
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.lineWidth = 2;
-                        ctx.strokeRect(4, 6, 12, 8);
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" }
                     }
                 }
                 ToolTip.visible: hovered
@@ -179,17 +166,16 @@ Item {
                     color: ellipseBtn.hovered ? "#eee" : (ellipseBtn.checked ? "#ddd" : "transparent")
                     border.color: ellipseBtn.checked ? "#aaa" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 20; height: 20
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.lineWidth = 2;
-                        ctx.beginPath();
-                        ctx.ellipse(10, 10, 6, 4); // center x, y, radiusX, radiusY
-                        ctx.stroke();
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" }
                     }
                 }
                 ToolTip.visible: hovered
@@ -214,21 +200,16 @@ Item {
                 background: Rectangle {
                     color: closeBtn.hovered ? "#eee" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 24
-                    height: 24
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.lineWidth = 2;
-                        ctx.beginPath();
-                        ctx.moveTo(6, 6);
-                        ctx.lineTo(18, 18);
-                        ctx.moveTo(18, 6);
-                        ctx.lineTo(6, 18);
-                        ctx.stroke();
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M18 6l-12 12 M6 6l12 12" }
                     }
                 }
                 onClicked: root.cancelRequested()
@@ -247,34 +228,16 @@ Item {
                 background: Rectangle {
                     color: saveBtn.hovered ? "#eee" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 24
-                    height: 24
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.lineWidth = 2;
-                        
-                        // Floppy disk outline
-                        ctx.beginPath();
-                        ctx.moveTo(5, 4);
-                        ctx.lineTo(19, 4);
-                        ctx.lineTo(19, 20);
-                        ctx.lineTo(5, 20);
-                        ctx.closePath();
-                        ctx.stroke();
-                        
-                        // Top notch
-                        ctx.beginPath();
-                        ctx.moveTo(15, 4);
-                        ctx.lineTo(15, 8);
-                        ctx.lineTo(19, 8);
-                        ctx.stroke();
-                        
-                        // Bottom save bar
-                        ctx.strokeRect(7, 15, 10, 5);
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M6 4h10l4 4v10a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2 M10 14a2 2 0 1 0 4 0a2 2 0 1 0 -4 0 M14 4l0 4l-6 0l0 -4" }
                     }
                 }
                 onClicked: root.saveRequested()
@@ -293,20 +256,16 @@ Item {
                 background: Rectangle {
                     color: confirmBtn.hovered ? "#eee" : "transparent"
                 }
-                contentItem: Canvas {
+                contentItem: Shape {
                     anchors.centerIn: parent
-                    width: 24
-                    height: 24
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-                        ctx.strokeStyle = "black";
-                        ctx.lineWidth = 2.5;
-                        ctx.beginPath();
-                        ctx.moveTo(6, 12);
-                        ctx.lineTo(10, 17);
-                        ctx.lineTo(18, 7);
-                        ctx.stroke();
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M5 12l5 5l10 -10" }
                     }
                 }
                 onClicked: root.confirmRequested()
