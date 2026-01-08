@@ -443,6 +443,40 @@ class ScreenshotApp(QObject):
             return 'move'
         return None
     
+    def get_active_toolbar_snipper(self):
+        """
+        Determine which snipper should host the toolbar.
+        Priority:
+        1. Snipper containing the bottom-right of selection.
+        2. Snipper closest to the bottom-right of selection (if off-screen).
+        """
+        if self.selection_rect.isNull() or not self.snippers:
+            return None
+            
+        p = self.selection_rect.bottomRight()
+        
+        # 1. Check strict containment
+        for snipper in self.snippers:
+            if snipper.screen_geometry.contains(p):
+                return snipper
+                
+        # 2. Find closest (Manhattan distance to rectangle)
+        closest_snipper = None
+        min_dist = float('inf')
+        
+        for snipper in self.snippers:
+            r = snipper.screen_geometry
+            # Calculate distance from point p to rect r
+            dx = max(r.left() - p.x(), 0, p.x() - r.right())
+            dy = max(r.top() - p.y(), 0, p.y() - r.bottom())
+            dist = dx + dy
+            
+            if dist < min_dist:
+                min_dist = dist
+                closest_snipper = snipper
+                
+        return closest_snipper
+    
     def expand_selection_to_point(self, point):
         """
         将选区扩大到包含指定点

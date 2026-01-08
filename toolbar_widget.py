@@ -94,39 +94,31 @@ class Toolbar(QWidget):
         if x < parent_rect.left():
             x = parent_rect.left()
             
-        # Also ensure it doesn't go off screen right (though aligning right usually prevents this unless selection is tiny and near left edge)
-        # Actually, if selection is small, right aligning might put it to the left of selection right edge, which is fine.
-        # But if selection is smaller than toolbar?
-        # Requirement: "Right align".
+        # Also ensure it doesn't go off screen right
+        if x + w > parent_rect.left() + parent_rect.width():
+            x = parent_rect.left() + parent_rect.width() - w
         
         # Let's calculate candidate positions
         
-        # Option 1: Bottom (Outside)
-        y_bottom = selection_rect.bottom() + 1 # 1px gap
-        candidate_bottom = QRect(x, y_bottom, w, h)
-        
-        # Option 2: Top (Outside)
-        y_top = selection_rect.top() - h - 1
-        candidate_top = QRect(x, y_top, w, h)
-        
-        # Option 3: Inside Bottom
-        y_inside = selection_rect.bottom() - h
-        if y_inside < selection_rect.top(): # If selection is too short, just align to top of selection?
-             y_inside = selection_rect.top()
-        candidate_inside = QRect(x, y_inside, w, h)
-        
-        # Check constraints
-        
-        # Can it fit below?
-        if candidate_bottom.bottom() <= parent_rect.bottom():
-             self.move(candidate_bottom.topLeft())
+        # 1. Prefer Outside Bottom
+        y = selection_rect.bottom() + 1
+        if y + h <= parent_rect.bottom():
+             self.move(x, y)
              return
-             
-        # Can it fit above?
-        if candidate_top.top() >= parent_rect.top():
-            self.move(candidate_top.topLeft())
-            return
+
+        # 2. Prefer Outside Top
+        y = selection_rect.top() - h - 1
+        if y >= parent_rect.top():
+             self.move(x, y)
+             return
+
+        # 3. Inside Bottom (clamped to screen)
+        # We want it at the bottom of the selection, BUT if that is off-screen, we pin it to bottom of screen.
+        target_bottom = min(selection_rect.bottom(), parent_rect.bottom())
+        y = target_bottom - h
+        
+        # Ensure it doesn't go off top of screen (if selection is tiny or screen is tiny)
+        if y < parent_rect.top():
+            y = parent_rect.top()
             
-        # Must go inside
-        # Note: If selection is tiny, "Inside" might overlap significantly, but per reqs -> Inside Bottom Right
-        self.move(candidate_inside.topLeft())
+        self.move(x, y)

@@ -99,10 +99,9 @@ class SnippingWidget(QWidget):
             painter.fillRect(self.rect(), overlay_color)
             
         # Update Toolbar Position
-        # Only show toolbar if the selection's bottom-right point is on this screen
-        # This prevents duplicate toolbars on multi-monitor setups
-        global_sel = self.controller.selection_rect
-        if not global_sel.isNull() and self.screen_geometry.contains(global_sel.bottomRight()):
+        # Use controller to determine the unique snipper that should show the toolbar
+        if not self.controller.selection_rect.isNull() and self == self.controller.get_active_toolbar_snipper():
+             global_sel = self.controller.selection_rect
              # Convert global selection rect to local coordinates
              offset = -self.screen_geometry.topLeft()
              local_sel = global_sel.translated(offset)
