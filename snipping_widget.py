@@ -1,7 +1,7 @@
-from PyQt5.QtWidgets import QWidget, QApplication, QVBoxLayout
-from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint
+from PyQt5.QtQuickWidgets import QQuickWidget
+from PyQt5.QtWidgets import QWidget
+from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint, QUrl
 from PyQt5.QtGui import QPainter, QColor, QBrush, QPen, QRegion
-from toolbar_widget import Toolbar
 
 class SnippingWidget(QWidget):
     """
@@ -167,14 +167,22 @@ class SnippingWindow(QWidget):
         self.snipping_widget.resize(width, height)
         self.snipping_widget.move(0, 0)
         
-        # Toolbar
-        self.toolbar = Toolbar(self)
+        # Toolbar (QQuickWidget)
+        self.toolbar = QQuickWidget(self)
+        self.toolbar.setSource(QUrl.fromLocalFile("Toolbar.qml"))
+        self.toolbar.setResizeMode(QQuickWidget.SizeRootObjectToView)
+        self.toolbar.setAttribute(Qt.WA_AlwaysStackOnTop)
+        self.toolbar.setClearColor(Qt.transparent)
         self.toolbar.hide() # Hidden by default
         
-        # Connect Toolbar Buttons
-        self.toolbar.btn_close.clicked.connect(self.handle_cancel_or_exit)
-        self.toolbar.btn_confirm.clicked.connect(self.handle_confirm_click)
-        # self.toolbar.btn_save.clicked.connect(...)
+        # Connect QML Signals
+        root = self.toolbar.rootObject()
+        if root:
+             root.cancelRequested.connect(self.handle_cancel_or_exit)
+             root.saveRequested.connect(lambda: print("Save requested (not implemented)"))
+             root.confirmRequested.connect(self.handle_confirm_click)
+        else:
+             print("Error: Could not load QML root object")
         
         self.show()
 
@@ -220,7 +228,44 @@ class SnippingWindow(QWidget):
              # Convert global selection rect to local coordinates
              offset = -self.screen_geometry.topLeft()
              local_sel = global_sel.translated(offset)
-             self.toolbar.update_position(local_sel, self.rect())
+             
+             # Calculate position
+             # Toolbar size comes from QML
+             w = self.toolbar.rootObject().width() if self.toolbar.rootObject() else 100
+             h = self.toolbar.rootObject().height() if self.toolbar.rootObject() else 36
+             
+             # Adjust QQuickWidget size to match root object
+             self.toolbar.resize(int(w), int(h))
+             
+             parent_rect = self.rect()
+             
+             # Logic from old toolbar widget:
+             
+             # Target X: Right aligned with selection
+             x = local_sel.right() - w
+             if x < parent_rect.left():
+                 x = parent_rect.left()
+             if x + w > parent_rect.left() + parent_rect.width():
+                 x = parent_rect.left() + parent_rect.width() - w
+                 
+             # 1. Prefer Outside Bottom
+             y = local_sel.bottom() + 1
+             if y + h <= parent_rect.bottom():
+                  self.toolbar.move(int(x), int(y))
+             else:
+                  # 2. Prefer Outside Top
+                  y = local_sel.top() - h - 1
+                  if y >= parent_rect.top():
+                      self.toolbar.move(int(x), int(y))
+                  else:
+                      # 3. Inside Bottom
+                      target_bottom = min(local_sel.bottom(), parent_rect.bottom())
+                      y = target_bottom - h
+                      if y < parent_rect.top():
+                          y = parent_rect.top()
+                      self.toolbar.move(int(x), int(y))
+             
+             self.toolbar.show()
              self.toolbar.raise_() # Ensure toolbar is on top of snipping widget
         else:
              self.toolbar.hide()

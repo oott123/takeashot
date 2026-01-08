@@ -45,9 +45,10 @@
     - **职责**: 负责绘制 (`paintEvent`)，包括背景图、半透明遮罩、选区边框、拟选区边框和手柄。
     - **事件**: 捕获鼠标事件 (`mousePressEvent` 等) 并**转发**给 `ScreenshotApp` 控制器处理。
 
-### `toolbar_widget.py`
-- **`Toolbar` 类**: 悬浮工具栏组件。
-    - **职责**: 提供确认、关闭等操作按钮，包含自身的 UI 布局和样式。
+### `Toolbar.qml`
+- **`Toolbar` 组件**: 使用 QML 实现的悬浮工具栏。
+    - **职责**: 负责 UI 渲染 (使用 Canvas 绘制图标) 和交互事件。
+    - **交互**: 解耦事件处理，不直接暴露按钮，而是发送信号 (`cancelRequested`, `saveRequested`, `confirmRequested`) 供外部连接。
 
 ### `window_lister.py`
 - **`WindowLister` 类**: 负责通过 KWin 脚本接口获取当前打开的窗口列表（位置和大小）。
