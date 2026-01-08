@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QToolButton
 from PyQt5.QtCore import Qt, QSize, QRect
-from PyQt5.QtGui import QIcon, QColor, QPalette
+from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPainter, QPen
 
 class Toolbar(QWidget):
     def __init__(self, parent=None):
@@ -16,58 +16,108 @@ class Toolbar(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Buttons
-        # Todo: Replace with actual icons and connect actions
-        # For now using standard icons or simple text for visualization
+        # Buttons with custom black icons
         
-        # 1. Cancel / Close
-        self.btn_close = self._create_button("application-exit", "Close")
+        # 1. Cancel / Close (X icon)
+        self.btn_close = self._create_button(self._create_close_icon(), "Close")
         layout.addWidget(self.btn_close)
 
-        # 2. Save
-        self.btn_save = self._create_button("document-save", "Save")
+        # 2. Save (Floppy disk icon)
+        self.btn_save = self._create_button(self._create_save_icon(), "Save")
         layout.addWidget(self.btn_save)
 
-        # 3. Confirm / Copy (Enter)
-        self.btn_confirm = self._create_button("edit-copy", "Copy")
+        # 3. Confirm / Copy (Checkmark icon)
+        self.btn_confirm = self._create_button(self._create_copy_icon(), "Copy")
         layout.addWidget(self.btn_confirm)
 
         # Adjust width based on content
         self.adjustSize()
         
     def _set_style(self):
-        # White background, Black border (handled via stylesheet or custom paint if needed)
-        # Using stylesheet for simplicity
+        # Style for buttons only - background will be drawn in paintEvent
         self.setStyleSheet("""
-            QWidget {
-                background-color: white;
-                border: 1px solid black;
-            }
             QToolButton {
                 border: none;
                 background: transparent;
-                border-right: 1px solid #ccc; /* Optional separator */
                 border-radius: 0px;
-            }
-            QToolButton:last-child {
-                border-right: none;
             }
             QToolButton:hover {
                 background-color: #eee;
             }
         """)
+    
+    def paintEvent(self, event):
+        """Custom paint event to ensure white background and black border are always visible"""
+        painter = QPainter(self)
         
-    def _create_button(self, icon_name, tooltip):
+        # Draw white background
+        painter.fillRect(self.rect(), QColor(255, 255, 255))
+        
+        # Draw black border
+        painter.setPen(QPen(Qt.black, 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        
+        super().paintEvent(event)
+    
+    def _create_close_icon(self):
+        """Create a black X icon"""
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(Qt.black, 2)
+        painter.setPen(pen)
+        
+        # Draw X
+        painter.drawLine(6, 6, 18, 18)
+        painter.drawLine(18, 6, 6, 18)
+        
+        painter.end()
+        return QIcon(pixmap)
+    
+    def _create_save_icon(self):
+        """Create a black save/floppy disk icon"""
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(Qt.black, 2)
+        painter.setPen(pen)
+        
+        # Draw floppy disk outline
+        painter.drawRect(5, 4, 14, 16)
+        # Draw top notch
+        painter.drawLine(15, 4, 15, 8)
+        painter.drawLine(15, 8, 19, 8)
+        painter.drawLine(19, 8, 19, 20)
+        # Draw bottom save bar
+        painter.drawRect(7, 15, 10, 5)
+        
+        painter.end()
+        return QIcon(pixmap)
+    
+    def _create_copy_icon(self):
+        """Create a black checkmark icon"""
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(Qt.black, 2.5)
+        painter.setPen(pen)
+        
+        # Draw checkmark
+        painter.drawLine(6, 12, 10, 17)
+        painter.drawLine(10, 17, 18, 7)
+        
+        painter.end()
+        return QIcon(pixmap)
+        
+    def _create_button(self, icon, tooltip):
         btn = QToolButton()
         btn.setFixedSize(32, 32)
-        
-        icon = QIcon.fromTheme(icon_name)
-        if icon.isNull():
-             # Fallback if theme icon missing
-             btn.setText(tooltip[0])
-        else:
-            btn.setIcon(icon)
-            
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(24, 24))
         btn.setToolTip(tooltip)
         return btn
 
