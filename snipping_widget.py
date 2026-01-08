@@ -147,6 +147,7 @@ class SnippingWindow(QWidget):
     def __init__(self, controller, pixmap, x, y, width, height):
         super().__init__()
         self.controller = controller
+        self.full_pixmap = pixmap
         self.screen_geometry = QRect(x, y, width, height)
         # We keep full_pixmap here just to pass it to the widget, 
         # or we let the widget hold it. The Widget needs it for paint.

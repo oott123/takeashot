@@ -7,3 +7,14 @@
 ---
 
 现在的问题是，工具条只在主窗口出现。当它应该在其它窗口的时候，就看不到了。
+
+---
+
+好像把复制功能搞坏了，Traceback (most recent call last):
+  File "/home/alice/Repos/takeashot/snipping_widget.py", line 211, in keyPressEvent
+    self.controller.capture_selection()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/alice/Repos/takeashot/main.py", line 218, in capture_selection
+    dpr = snipper.full_pixmap.devicePixelRatio()
+          ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'SnippingWindow' object has no attribute 'full_pixmap'
