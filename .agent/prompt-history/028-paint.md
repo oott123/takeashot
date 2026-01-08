@@ -53,3 +53,7 @@ TypeError: arguments did not match any overloaded call:
   QRectF(r: QRect): argument 1 has unexpected type 'QPoint'
   QRectF(a0: QRectF): argument 1 has unexpected type 'QPoint'
 zsh: abort (core dumped)  python main.py
+
+---
+
+好了，更新下 design.md 就行了

@@ -36,19 +36,26 @@
 - **`ScreenshotApp` 类**: 核心控制器，管理全局状态和逻辑。
     - **状态管理**: 维护 `selection_rect` (实选区), `pending_selection_rect` (拟选区), `windows` (窗口列表)。
     - **逻辑处理**: `on_mouse_press`, `on_mouse_move`, `capture_selection` (截图合成与剪贴板操作), `_start_window_snapping` (启动窗口列表获取)。
-    - **交互**: 处理从 SnippingWidget 转发过来的鼠标事件，决定状态流转。
+    - **交互**: 处理从 SnippingWidget 转发过来的鼠标事件，决定状态流转。将绘图事件委托给 `AnnotationManager`。
 
 ### `snipping_widget.py`
 - **`SnippingWindow` 类**: 每个屏幕一个的顶层全屏窗口。
     - **职责**: 作为容器，包含 `SnippingWidget` 和 `Toolbar`。管理工具栏的显示和定位 (`update_toolbar_position`)，处理窗口级别的按键 (Esc, Enter)。
 - **`SnippingWidget` 类**: 填充窗口的主要绘图组件。
-    - **职责**: 负责绘制 (`paintEvent`)，包括背景图、半透明遮罩、选区边框、拟选区边框和手柄。
+    - **职责**: 负责绘制 (`paintEvent`)，包括背景图、半透明遮罩、选区边框、拟选区边框、手柄以及**标注层**。
     - **事件**: 捕获鼠标事件 (`mousePressEvent` 等) 并**转发**给 `ScreenshotApp` 控制器处理。
 
 ### `Toolbar.qml`
 - **`Toolbar` 组件**: 使用 QML 实现的悬浮工具栏。
     - **职责**: 负责 UI 渲染 (使用 Canvas 绘制图标) 和交互事件。包含透明顶部内边距 (`topPadding`) 以支持 Tooltip 显示。
-    - **交互**: 解耦事件处理，不直接暴露按钮，而是发送信号 (`cancelRequested`, `saveRequested`, `confirmRequested`) 供外部连接。
+    - **交互**: 发送信号 (`cancelRequested`, `saveRequested`, `confirmRequested`, `toolSelected`) 供外部连接。支持绘图工具切换（指针、铅笔、直线、矩形、椭圆）。
+
+### `annotations/`
+- **`AnnotationManager` 类**: 管理所有标注项的集合和当前选中的工具。
+    - **职责**: 处理标注相关的鼠标事件（点击选中、拖拽绘制、移动、缩放、旋转），维护当前激活的标注项 (`active_item`) 和选中项 (`selected_item`)。
+- **`AnnotationItem` 及子类**: 
+    - `RectItem`, `EllipseItem`, `LineItem`, `StrokeItem` (铅笔)。
+    - **职责**: 负责自身的绘制 (`draw`)、命中测试 (`contains`)、几何变换（移动、缩放、旋转）和选区 UI 绘制。
 
 ### `window_lister.py`
 - **`WindowLister` 类**: 负责通过 KWin 脚本接口获取当前打开的窗口列表（位置和大小）。
