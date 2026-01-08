@@ -6,6 +6,7 @@ from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
 from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWindow
 from window_lister import WindowLister
+from annotations.manager import AnnotationManager
 
 # Enable High DPI scaling - MUST be set before QApplication creation
 if hasattr(Qt, 'AA_EnableHighDpiScaling'):
@@ -74,8 +75,21 @@ class ScreenshotApp(QObject):
         self.window_lister = None  # Window lister instance
         self.snapping_enabled = False  # Whether window snapping is active
 
+        # Annotations
+        self.annotation_manager = AnnotationManager()
+        self.annotation_manager.update_snippets = self.update_snippets
+
         # Constants
         self.RESIZE_HANDLE_SIZE = 8
+
+    def set_tool(self, tool_name):
+        self.annotation_manager.set_tool(tool_name)
+        # If switching to pointer, we might need to reset some state?
+        print(f"Tool selected: {tool_name}")
+
+    def delete_selected_annotation(self):
+        if self.annotation_manager.delete_selected_item():
+            self.update_snippets()
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -264,6 +278,14 @@ class ScreenshotApp(QObject):
             
             painter.drawImage(target_rect, src_image, source_rect)
 
+        # Draw Annotations
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.save()
+        painter.scale(max_dpr, max_dpr)
+        painter.translate(-sel_rect.x(), -sel_rect.y())
+        self.annotation_manager.draw_annotations(painter)
+        painter.restore()
+
         painter.end()
 
         # Convert to pixmap for clipboard
@@ -276,6 +298,11 @@ class ScreenshotApp(QObject):
         print(f"Captured {sel_rect.width()}x{sel_rect.height()} logical ({target_w_phys}x{target_h_phys} physical) to clipboard.")
 
     def on_mouse_press(self, global_pos):
+        # Annotations (Top priority if drawing or interacting with annotations)
+        if self.annotation_manager.handle_mouse_press(global_pos):
+            self.update_snippets()
+            return
+            
         # Record press position for click vs drag detection
         self.click_start_pos = global_pos
         self.is_dragging = False
@@ -319,6 +346,10 @@ class ScreenshotApp(QObject):
         self.update_snippets()
 
     def on_mouse_move(self, global_pos):
+        if self.annotation_manager.handle_mouse_move(global_pos):
+            self.update_snippets()
+            return
+
         if not self.is_selecting:
             # Window snapping: if no real selection and snapping enabled, check if mouse is over a window
             if self.snapping_enabled and self.selection_rect.isNull():
@@ -380,6 +411,10 @@ class ScreenshotApp(QObject):
             self.update_snippets()
 
     def on_mouse_release(self):
+        if self.annotation_manager.handle_mouse_release(None):
+            self.update_snippets()
+            return
+            
         # Determine if this was a click or a drag
         distance = (self.drag_start_pos - self.click_start_pos).manhattanLength()
         was_drag = distance > self.MOUSE_DRAG_THRESHOLD

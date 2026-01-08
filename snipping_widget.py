@@ -82,6 +82,33 @@ class SnippingWidget(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(local_sel)
             
+            # Draw annotations (Clipped to selection)
+            painter.save()
+            painter.setClipRect(local_sel)
+            # Annotations are in GLOBAL coordinates, but painter is local (offset)
+            # AnnotationManager expects painter to be in global coords?
+            # Or we transform painter to global?
+            # AnnotationItem.draw uses self.pos (Global).
+            # So if we translate painter by -offset (which is -(-topLeft) = topLeft), we are in Global?
+            # Wait, `offset` variable in code is `-self.window().screen_geometry.topLeft()`.
+            # So `local = global + offset`.
+            # So `global = local - offset`.
+            # To draw in global coords, we need to apply transform `translate(offset)`.
+            # Wait. `offset` is what we add to global to get local.
+            # So if we have global points, and we want to draw them on this widget (which is at local (0,0)),
+            # we need to translate the painter so that (0,0) becomes global (0,0)?
+            # No, if I draw at (0,0) on widget, it's top-left of screen.
+            # If I draw at global (100,100), and screen is at (0,0), it draws at (100,100).
+            # If screen is at (1920,0), offset is (-1920, 0).
+            # If I draw at global (1920, 0), I want it to appear at widget (0,0).
+            # So I need to translate painter by `offset`. 
+            # `painter.translate(offset.x(), offset.y())`.
+            # Then drawing at 1920 will be at 1920-1920 = 0. Correct.
+            painter.translate(offset)
+            if hasattr(self.controller, 'annotation_manager'):
+                self.controller.annotation_manager.draw_annotations(painter)
+            painter.restore()
+            
             # Draw resize handles
             self.draw_handles(painter, offset)
         else:
@@ -170,6 +197,10 @@ class SnippingWindow(QWidget):
         # Toolbar (QQuickWidget)
         self.toolbar = QQuickWidget(self)
         self.toolbar.setSource(QUrl.fromLocalFile("Toolbar.qml"))
+        if self.toolbar.status() == QQuickWidget.Error:
+             for error in self.toolbar.errors():
+                 print("QML Error:", error.toString())
+        
         self.toolbar.setResizeMode(QQuickWidget.SizeRootObjectToView)
         self.toolbar.setAttribute(Qt.WA_AlwaysStackOnTop)
         self.toolbar.setClearColor(Qt.transparent)
@@ -181,6 +212,7 @@ class SnippingWindow(QWidget):
              root.cancelRequested.connect(self.handle_cancel_or_exit)
              root.saveRequested.connect(lambda: print("Save requested (not implemented)"))
              root.confirmRequested.connect(self.handle_confirm_click)
+             root.toolSelected.connect(self.handle_tool_selected)
         else:
              print("Error: Could not load QML root object")
         
@@ -189,6 +221,9 @@ class SnippingWindow(QWidget):
     def resizeEvent(self, event):
         self.snipping_widget.resize(event.size())
         super().resizeEvent(event)
+
+    def handle_tool_selected(self, tool_name):
+        self.controller.set_tool(tool_name)
 
     def handle_confirm_click(self):
         self.controller.capture_selection()
@@ -219,6 +254,8 @@ class SnippingWindow(QWidget):
         elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             self.controller.capture_selection()
             self.close_all()
+        elif event.key() == Qt.Key_Delete:
+            self.controller.delete_selected_annotation()
 
     def update_toolbar_position(self):
         # Update Toolbar Position
@@ -229,13 +266,18 @@ class SnippingWindow(QWidget):
              offset = -self.screen_geometry.topLeft()
              local_sel = global_sel.translated(offset)
              
+             
              # Calculate position
              # Toolbar size comes from QML
-             w = self.toolbar.rootObject().width() if self.toolbar.rootObject() else 100
-             h = self.toolbar.rootObject().height() if self.toolbar.rootObject() else 36
+             root_obj = self.toolbar.rootObject()
+             if not root_obj:
+                 return # Toolbar failed to load, skip positioning
+
+             w = root_obj.width()
+             h = root_obj.height()
              
              # Get top padding from QML (default to 0 if not property)
-             top_padding = self.toolbar.rootObject().property("topPadding")
+             top_padding = root_obj.property("topPadding")
              if top_padding is None:
                  top_padding = 0
              else:

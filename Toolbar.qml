@@ -15,6 +15,7 @@ Item {
     signal cancelRequested()
     signal saveRequested()
     signal confirmRequested()
+    signal toolSelected(string toolName)
 
     // The actual visible toolbar
     Rectangle {
@@ -30,6 +31,179 @@ Item {
             id: row
             anchors.centerIn: parent
             spacing: 0
+
+            // Tool Group
+            ButtonGroup {
+                id: toolGroup
+                buttons: [pointerBtn, pencilBtn, lineBtn, rectBtn, ellipseBtn]
+            }
+
+            // --- Tools ---
+
+            // Pointer
+            Button {
+                id: pointerBtn
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                padding: 4
+                checkable: true
+                checked: true
+                onToggled: if(checked) root.toolSelected("pointer")
+                background: Rectangle {
+                    color: pointerBtn.hovered ? "#eee" : (pointerBtn.checked ? "#ddd" : "transparent")
+                    border.color: pointerBtn.checked ? "#aaa" : "transparent"
+                }
+                contentItem: Canvas {
+                    anchors.centerIn: parent
+                    width: 20; height: 20
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        ctx.strokeStyle = "black";
+                        ctx.fillStyle = "black";
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.moveTo(6, 4);
+                        ctx.lineTo(14, 12);
+                        ctx.lineTo(10, 12);
+                        ctx.lineTo(13, 18);
+                        ctx.lineTo(11, 19);
+                        ctx.lineTo(8, 13);
+                        ctx.lineTo(4, 13);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
+                ToolTip.visible: hovered
+                ToolTip.text: "Select / Edit"
+            }
+
+            // Pencil
+            Button {
+                id: pencilBtn
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                padding: 4
+                checkable: true
+                onToggled: if(checked) root.toolSelected("pencil")
+                background: Rectangle {
+                    color: pencilBtn.hovered ? "#eee" : (pencilBtn.checked ? "#ddd" : "transparent")
+                    border.color: pencilBtn.checked ? "#aaa" : "transparent"
+                }
+                contentItem: Canvas {
+                    anchors.centerIn: parent
+                    width: 20; height: 20
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        ctx.strokeStyle = "black";
+                        ctx.lineWidth = 2;
+                        ctx.lineCap = "round";
+                        ctx.beginPath();
+                        ctx.moveTo(4, 16);
+                        ctx.quadraticCurveTo(8, 4, 16, 4);
+                        ctx.stroke();
+                    }
+                }
+                ToolTip.visible: hovered
+                ToolTip.text: "Pencil"
+            }
+
+            // Line
+            Button {
+                id: lineBtn
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                padding: 4
+                checkable: true
+                onToggled: if(checked) root.toolSelected("line")
+                background: Rectangle {
+                    color: lineBtn.hovered ? "#eee" : (lineBtn.checked ? "#ddd" : "transparent")
+                    border.color: lineBtn.checked ? "#aaa" : "transparent"
+                }
+                contentItem: Canvas {
+                    anchors.centerIn: parent
+                    width: 20; height: 20
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        ctx.strokeStyle = "black";
+                        ctx.lineWidth = 2;
+                        ctx.lineCap = "round";
+                        ctx.beginPath();
+                        ctx.moveTo(4, 16);
+                        ctx.lineTo(16, 4);
+                        ctx.stroke();
+                    }
+                }
+                ToolTip.visible: hovered
+                ToolTip.text: "Line"
+            }
+
+            // Rectangle
+            Button {
+                id: rectBtn
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                padding: 4
+                checkable: true
+                onToggled: if(checked) root.toolSelected("rect")
+                background: Rectangle {
+                    color: rectBtn.hovered ? "#eee" : (rectBtn.checked ? "#ddd" : "transparent")
+                    border.color: rectBtn.checked ? "#aaa" : "transparent"
+                }
+                contentItem: Canvas {
+                    anchors.centerIn: parent
+                    width: 20; height: 20
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        ctx.strokeStyle = "black";
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(4, 6, 12, 8);
+                    }
+                }
+                ToolTip.visible: hovered
+                ToolTip.text: "Rectangle"
+            }
+
+            // Ellipse
+            Button {
+                id: ellipseBtn
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                padding: 4
+                checkable: true
+                onToggled: if(checked) root.toolSelected("ellipse")
+                background: Rectangle {
+                    color: ellipseBtn.hovered ? "#eee" : (ellipseBtn.checked ? "#ddd" : "transparent")
+                    border.color: ellipseBtn.checked ? "#aaa" : "transparent"
+                }
+                contentItem: Canvas {
+                    anchors.centerIn: parent
+                    width: 20; height: 20
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        ctx.strokeStyle = "black";
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.ellipse(10, 10, 6, 4); // center x, y, radiusX, radiusY
+                        ctx.stroke();
+                    }
+                }
+                ToolTip.visible: hovered
+                ToolTip.text: "Ellipse"
+            }
+
+            // Separator
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 20
+                color: "#ccc"
+                Layout.leftMargin: 4
+                Layout.rightMargin: 4
+            }
 
             // 1. Close Button (X)
             Button {
