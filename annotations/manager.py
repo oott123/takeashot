@@ -152,3 +152,14 @@ class AnnotationManager:
     def draw_annotations(self, painter):
         for item in self.items:
             item.draw(painter)
+
+    def reset(self):
+        self.items = []
+        self.current_tool = 'pointer'
+        self.active_item = None
+        self.selected_item = None
+        self.is_drawing = False
+        self.is_moving = False
+        self.is_resizing = False
+        self.is_rotating = False
+        self.active_handle = None

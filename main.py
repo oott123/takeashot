@@ -99,6 +99,9 @@ class ScreenshotApp(QObject):
         print("Starting capture...")
         self.close_all_snippers()
         
+        # Reset annotation manager (clears items and resets tool to pointer)
+        self.annotation_manager.reset()
+        
         # Reset selection state
         self.selection_rect = QRect()
         self.is_selecting = False
