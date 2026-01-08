@@ -5,8 +5,9 @@ from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPainter, QPen
 class Toolbar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(32)
-        
+        # Height: 1px top border + 1px top margin + 32px button + 1px bottom margin + 1px bottom border = 36px
+        self.setFixedHeight(36)
+
         # UI Styling
         self.setObjectName("toolbar")
         self.setStyleSheet("""
@@ -23,10 +24,10 @@ class Toolbar(QFrame):
                 background-color: #eee;
             }
         """)
-        
-        # Layout
+
+        # Layout - add margins to account for borders
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, 1, 0, 1)
         layout.setSpacing(0)
         
         # Buttons with custom black icons
