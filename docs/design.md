@@ -2,63 +2,57 @@
 
 ## 项目用途
 
-基于 PyQt5 的截图工具，支持窗口吸附功能，用于在 KDE Wayland 环境下进行屏幕区域选择和截图。
+这是一个专为 KDE Wayland 环境设计的截图工具。它使用 PyQt5 构建，支持多屏幕截图、区域选择以及智能窗口吸附功能。工具通过 D-Bus 与 KWin 交互获取屏幕截图和窗口信息。
 
 ## 选区状态
 
-### 拟选择状态（Pending Selection）
+### 1. 拟选择状态 (Pending Selection)
+- **定义**: 用户鼠标悬停在某个窗口上，但尚未点击确认时的预览状态。
+- **状态变量**: `pending_selection_rect` 有值 (非空)，`selection_rect` 为空。
+- **表现**: 显示对应窗口的蓝色边框，但**不显示**调整手柄 (Resize Handles) 和工具栏。
+- **操作**: 点击鼠标左键将确认该区域为正式选区。
 
-鼠标悬停在窗口上时，显示窗口边框预览，但还未确认选中。此时 `pending_selection_rect` 有值，`selection_rect` 为空，显示蓝色边框但不显示调整手柄。
+### 2. 有选区状态 (Has Selection)
+- **定义**: 用户已确认了一个具体的截图区域（通过拖拽创建或点击“拟选择”区域确认）。
+- **状态变量**: `selection_rect` 有值 (非空)。
+- **表现**: 显示选区的蓝色边框，显示 8 个调整手柄，并在选区附近显示工具栏 (Toolbar)。选区以外区域显示半透明遮罩。
+- **操作**: 可以拖拽手柄调整大小，拖拽选区移动位置，按 Enter 或点击工具栏按钮完成截图。
 
-### 有选区状态（Has Selection）
-
-用户已经确认了选区（可以通过拖拽创建或点击窗口确认），此时 `selection_rect` 有值，可以调整大小或移动，按 Enter 确认截图，显示蓝色边框和调整手柄。
-
-### 无选区状态（No Selection）
-
-既没有拟选择也没有实际选区，此时 `selection_rect` 和 `pending_selection_rect` 都为空，显示半透明遮罩。
+### 3. 无选区状态 (No Selection)
+- **定义**: 初始状态或取消选区后的状态，没有任何区域被选中或预览。
+- **状态变量**: `selection_rect` 和 `pending_selection_rect` 均为空。
+- **表现**: 全屏显示半透明遮罩，鼠标光标为十字准星。
+- **操作**: 鼠标拖拽可创建新选区，移动鼠标可寻找窗口触发“拟选择状态”。
 
 ## 支持环境
 
-KDE Wayland only（依赖 KWin 的 D-Bus 接口）
+- **OS**: Linux
+- **Desktop Environment**: KDE Plasma (Wayland Session)
+- **Dependencies**: 依赖 KWin 的 D-Bus 接口 (`org.kde.KWin.ScreenShot2`, 脚本接口) 获取截图和窗口列表。
 
 ## 相关代码位置
 
-### main.py - ScreenshotApp 类
+### `main.py`
+- **`ScreenshotApp` 类**: 核心控制器，管理全局状态和逻辑。
+    - **状态管理**: 维护 `selection_rect` (实选区), `pending_selection_rect` (拟选区), `windows` (窗口列表)。
+    - **逻辑处理**: `on_mouse_press`, `on_mouse_move`, `capture_selection` (截图合成与剪贴板操作), `_start_window_snapping` (启动窗口列表获取)。
+    - **交互**: 处理从 SnippingWidget 转发过来的鼠标事件，决定状态流转。
 
-- `selection_rect`：实际选区
-- `pending_selection_rect`：拟选区
-- `pending_window`：鼠标下的窗口
-- `on_mouse_press`：鼠标按下事件处理
-- `on_mouse_move`：鼠标移动事件处理
-- `on_mouse_release`：鼠标释放事件处理
-- `capture_selection`：截图功能
-- `cancel_selection`：取消选区
-- `should_exit`：判断是否退出
-- `get_pending_selection_rect`：获取拟选区
-- `_get_window_at`：获取鼠标位置的窗口
-- `_on_windows_ready`：窗口列表获取完成回调
-- `get_handle_rects`：获取调整手柄位置
-- `get_handle_at`：获取鼠标位置的调整手柄
+### `snipping_widget.py`
+- **`SnippingWindow` 类**: 每个屏幕一个的顶层全屏窗口。
+    - **职责**: 作为容器，包含 `SnippingWidget` 和 `Toolbar`。管理工具栏的显示和定位 (`update_toolbar_position`)，处理窗口级别的按键 (Esc, Enter)。
+- **`SnippingWidget` 类**: 填充窗口的主要绘图组件。
+    - **职责**: 负责绘制 (`paintEvent`)，包括背景图、半透明遮罩、选区边框、拟选区边框和手柄。
+    - **事件**: 捕获鼠标事件 (`mousePressEvent` 等) 并**转发**给 `ScreenshotApp` 控制器处理。
 
-### snipping_widget.py - SnippingWidget 类
+### `toolbar_widget.py`
+- **`Toolbar` 类**: 悬浮工具栏组件。
+    - **职责**: 提供确认、关闭等操作按钮，包含自身的 UI 布局和样式。
 
-- `paintEvent`：绘制截图界面（包括背景、选区、拟选区、调整手柄）
-- `mousePressEvent`：鼠标按下事件
-- `mouseMoveEvent`：鼠标移动事件
-- `mouseReleaseEvent`：鼠标释放事件
-- `keyPressEvent`：键盘事件处理
-- `draw_handles`：绘制调整手柄
+### `window_lister.py`
+- **`WindowLister` 类**: 负责通过 KWin 脚本接口获取当前打开的窗口列表（位置和大小）。
+    - **职责**: 异步执行 KWin 脚本，通过 D-Bus 信号接收窗口数据，用于吸附功能。
 
-### window_lister.py
-
-- `WindowLister` 类：窗口列表获取器
-  - `get_windows_async`：异步获取窗口列表
-  - `_on_windows_received`：窗口数据接收完成回调
-- `WindowListReceiver` 类：DBus 接收器
-  - `receive`：接收 KWin 脚本返回的窗口数据
-
-### screenshot_backend.py - ScreenshotBackend 类
-
-- `capture_workspace`：截取整个工作区
-- `capture_screen`：截取单个屏幕
+### `screenshot_backend.py`
+- **`ScreenshotBackend` 类**: 负责底层的屏幕抓取。
+    - **职责**: 封装 `org.kde.KWin.ScreenShot2` 接口调用，提供 `capture_screen` (单屏) 和 `capture_workspace` (全屏) 方法。
