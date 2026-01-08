@@ -409,6 +409,7 @@ class ScreenshotApp(QObject):
     def update_snippets(self):
         for snipper in self.snippers:
             snipper.update()
+            snipper.update_toolbar_position()
 
     def get_handle_rects(self):
         # Only show handles for real selection, not pending selection
