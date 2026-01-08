@@ -234,6 +234,13 @@ class SnippingWindow(QWidget):
              w = self.toolbar.rootObject().width() if self.toolbar.rootObject() else 100
              h = self.toolbar.rootObject().height() if self.toolbar.rootObject() else 36
              
+             # Get top padding from QML (default to 0 if not property)
+             top_padding = self.toolbar.rootObject().property("topPadding")
+             if top_padding is None:
+                 top_padding = 0
+             else:
+                 top_padding = int(top_padding)
+             
              # Adjust QQuickWidget size to match root object
              self.toolbar.resize(int(w), int(h))
              
@@ -249,18 +256,34 @@ class SnippingWindow(QWidget):
                  x = parent_rect.left() + parent_rect.width() - w
                  
              # 1. Prefer Outside Bottom
-             y = local_sel.bottom() + 1
+             # We want the VISIBLE top of the toolbar to be at selection.bottom() + 1
+             # Visible top is at y + top_padding
+             # So y + top_padding = local_sel.bottom() + 1
+             # y = local_sel.bottom() + 1 - top_padding
+             
+             y = local_sel.bottom() + 1 - top_padding
              if y + h <= parent_rect.bottom():
                   self.toolbar.move(int(x), int(y))
              else:
                   # 2. Prefer Outside Top
-                  y = local_sel.top() - h - 1
+                  # We want the VISIBLE bottom of the toolbar to be at selection.top() - 1
+                  # Visible bottom is at y + h (since h includes padding + visible content? No wait)
+                  # In QML: height = visible + padding. Toolbar is at bottom.
+                  # So Visible Bottom IS Widget Bottom.
+                  # y + h = local_sel.top() - 1
+                  # y = local_sel.top() - 1 - h
+                  
+                  y = local_sel.top() - 1 - h
                   if y >= parent_rect.top():
                       self.toolbar.move(int(x), int(y))
                   else:
                       # 3. Inside Bottom
+                      # Visible Bottom at Selection Bottom
+                      # y + h = target_bottom
                       target_bottom = min(local_sel.bottom(), parent_rect.bottom())
                       y = target_bottom - h
+                      
+                      # Ensure it doesn't go off top of screen
                       if y < parent_rect.top():
                           y = parent_rect.top()
                       self.toolbar.move(int(x), int(y))

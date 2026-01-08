@@ -47,7 +47,7 @@
 
 ### `Toolbar.qml`
 - **`Toolbar` 组件**: 使用 QML 实现的悬浮工具栏。
-    - **职责**: 负责 UI 渲染 (使用 Canvas 绘制图标) 和交互事件。
+    - **职责**: 负责 UI 渲染 (使用 Canvas 绘制图标) 和交互事件。包含透明顶部内边距 (`topPadding`) 以支持 Tooltip 显示。
     - **交互**: 解耦事件处理，不直接暴露按钮，而是发送信号 (`cancelRequested`, `saveRequested`, `confirmRequested`) 供外部连接。
 
 ### `window_lister.py`
