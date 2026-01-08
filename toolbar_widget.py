@@ -1,15 +1,28 @@
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QToolButton
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QToolButton, QFrame
 from PyQt5.QtCore import Qt, QSize, QRect
 from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPainter, QPen
 
-class Toolbar(QWidget):
+class Toolbar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(32)
         
         # UI Styling
-        self.setAutoFillBackground(True)
-        self._set_style()
+        self.setObjectName("toolbar")
+        self.setStyleSheet("""
+            #toolbar {
+                background-color: white;
+                border: 1px solid black;
+            }
+            QToolButton {
+                border: none;
+                background: transparent;
+                border-radius: 0px;
+            }
+            QToolButton:hover {
+                background-color: #eee;
+            }
+        """)
         
         # Layout
         layout = QHBoxLayout(self)
@@ -32,33 +45,6 @@ class Toolbar(QWidget):
 
         # Adjust width based on content
         self.adjustSize()
-        
-    def _set_style(self):
-        # Style for buttons only - background will be drawn in paintEvent
-        self.setStyleSheet("""
-            QToolButton {
-                border: none;
-                background: transparent;
-                border-radius: 0px;
-            }
-            QToolButton:hover {
-                background-color: #eee;
-            }
-        """)
-    
-    def paintEvent(self, event):
-        """Custom paint event to ensure white background and black border are always visible"""
-        painter = QPainter(self)
-        
-        # Draw white background
-        painter.fillRect(self.rect(), QColor(255, 255, 255))
-        
-        # Draw black border
-        painter.setPen(QPen(Qt.black, 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
-        
-        super().paintEvent(event)
     
     def _create_close_icon(self):
         """Create a black X icon"""

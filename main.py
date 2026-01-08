@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
 from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize, QRectF
 from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
 from screenshot_backend import ScreenshotBackend
-from snipping_widget import SnippingWidget
+from snipping_widget import SnippingWindow
 from window_lister import WindowLister
 
 # Enable High DPI scaling - MUST be set before QApplication creation
@@ -161,7 +161,7 @@ class ScreenshotApp(QObject):
     def _launch_snippers(self, screen_pixmaps):
         for screen, pixmap in screen_pixmaps.items():
             geo = screen.geometry()
-            snipper = SnippingWidget(self, pixmap, geo.x(), geo.y(), geo.width(), geo.height())
+            snipper = SnippingWindow(self, pixmap, geo.x(), geo.y(), geo.width(), geo.height())
             snipper.closed.connect(self.on_snipper_closed)
             
             if snipper.windowHandle():

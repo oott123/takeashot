@@ -1,42 +1,21 @@
-from PyQt5.QtWidgets import QWidget, QApplication
+from PyQt5.QtWidgets import QWidget, QApplication, QVBoxLayout
 from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint
 from PyQt5.QtGui import QPainter, QColor, QBrush, QPen, QRegion
 from toolbar_widget import Toolbar
 
 class SnippingWidget(QWidget):
-    closed = pyqtSignal()
-    
-    def __init__(self, controller, pixmap, x, y, width, height):
+    """
+    The widget that handles the actual painting of the screenshot, overlay, and selection.
+    It fills the entire SnippingWindow.
+    """
+    def __init__(self, controller, pixmap):
         super().__init__()
         self.controller = controller
-        self.setWindowState(Qt.WindowFullScreen)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.X11BypassWindowManagerHint)
-        self.setAttribute(Qt.WA_DeleteOnClose)
-        self.setGeometry(x, y, width, height)
         self.full_pixmap = pixmap
-        self.screen_geometry = QRect(x, y, width, height)
         
+        # We need mouse tracking to show handles/cursor
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
-        
-        # Toolbar
-        self.toolbar = Toolbar(self)
-        self.toolbar.hide()
-        
-        # Connect Toolbar Buttons
-        # Close/Cancel
-        self.toolbar.btn_close.clicked.connect(self.handle_cancel_or_exit)
-        # Capture
-        self.toolbar.btn_confirm.clicked.connect(self.handle_confirm_click)
-        # Save (Placeholder - treated as capture for now or no-op? Requirement says placeholder. Let's make it print or do nothing)
-        # self.toolbar.btn_save.clicked.connect(lambda: print("Save clicked"))
-        
-        self.show()
-
-    def handle_confirm_click(self):
-        self.controller.capture_selection()
-        QTimer.singleShot(0, self.close)
-
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -51,11 +30,23 @@ class SnippingWidget(QWidget):
         # We want everything DARK except the selection INTERSECTED with this screen
         overlay_color = QColor(0, 0, 0, 100) # Semi-transparent black
         
+        # Screen geometry relative to itself is just rect()
+        # But we need to know where we are in global space to map the global selection rect
+        # The Window holds the screen geometry info.
+        # However, for painting, we can just use the global coordinates transformed to local.
+        # This widget fills the window, which is positioned at (x,y)
+        
+        # We need the global offset of this window. 
+        # Since this widget is inside SnippingWindow, and SnippingWindow is at global (x,y).
+        # mapToGlobal(QPoint(0,0)) should give us that IF the window is shown.
+        # Or we can ask the parent window.
+        parent_window = self.window()
+        offset = -parent_window.screen_geometry.topLeft()
+        
         # Check for pending (snap) selection first
         pending_sel = self.controller.get_pending_selection_rect()
         if not pending_sel.isNull():
             # Draw pending selection (snap preview)
-            offset = -self.screen_geometry.topLeft()
             local_pending = pending_sel.translated(offset)
             
             # Draw overlay around the pending selection
@@ -75,7 +66,6 @@ class SnippingWidget(QWidget):
             # Don't draw handles for pending selection
         elif not self.controller.selection_rect.isNull():
             # Draw real selection
-            offset = -self.screen_geometry.topLeft()
             local_sel = self.controller.selection_rect.translated(offset)
             
             # Draw overlay around the selection
@@ -97,18 +87,6 @@ class SnippingWidget(QWidget):
         else:
             # No selection at all
             painter.fillRect(self.rect(), overlay_color)
-            
-        # Update Toolbar Position
-        # Use controller to determine the unique snipper that should show the toolbar
-        if not self.controller.selection_rect.isNull() and self == self.controller.get_active_toolbar_snipper():
-             global_sel = self.controller.selection_rect
-             # Convert global selection rect to local coordinates
-             offset = -self.screen_geometry.topLeft()
-             local_sel = global_sel.translated(offset)
-             self.toolbar.update_position(local_sel, self.rect())
-        else:
-             self.toolbar.hide()
-
 
     def draw_handles(self, painter, offset):
         handles = self.controller.get_handle_rects()
@@ -118,29 +96,18 @@ class SnippingWidget(QWidget):
         for handle_rect in handles.values():
             # handle_rect is global, map to local
             local_handle = handle_rect.translated(offset)
-            # Only draw if it intersects our screen (window handles clipping mostly, but good to check)
+            # Only draw if it intersects our screen
             if local_handle.intersects(self.rect()):
                 painter.drawRect(local_handle)
-
-    def handle_cancel_or_exit(self):
-        """Handle cancel or exit operation for both right-click and Esc key."""
-        # If there's a pending selection, exit directly
-        if not self.controller.get_pending_selection_rect().isNull():
-            QTimer.singleShot(0, self.close)
-        # If there's a real selection, cancel it; otherwise exit
-        elif not self.controller.cancel_selection():
-            QTimer.singleShot(0, self.close)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.controller.on_mouse_press(event.globalPos())
         elif event.button() == Qt.RightButton:
-            self.handle_cancel_or_exit()
+            # Propagate up to window to handle close
+            self.window().handle_cancel_or_exit()
 
     def mouseMoveEvent(self, event):
-        # Forward move to controller to update active handle / selection
-        # But for cursor update (hover), we can query controller
-        
         global_pos = event.globalPos()
         
         if not self.controller.is_selecting:
@@ -153,26 +120,109 @@ class SnippingWidget(QWidget):
             else: self.setCursor(Qt.CrossCursor)
         
         self.controller.on_mouse_move(global_pos)
+        
+        # Tell window to maybe update toolbar
+        self.window().update_toolbar_position()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.controller.on_mouse_release()
+            # Toolbar might need to appear now
+            self.window().update_toolbar_position()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if not self.controller.selection_rect.isNull():
+                if self.controller.selection_rect.contains(event.globalPos()):
+                    self.controller.capture_selection()
+                    self.window().close_all()
+
+
+class SnippingWindow(QWidget):
+    """
+    The top-level window that contains the SnippingWidget and the Toolbar.
+    """
+    closed = pyqtSignal()
+    
+    def __init__(self, controller, pixmap, x, y, width, height):
+        super().__init__()
+        self.controller = controller
+        self.screen_geometry = QRect(x, y, width, height)
+        # We keep full_pixmap here just to pass it to the widget, 
+        # or we let the widget hold it. The Widget needs it for paint.
+        
+        # Window Setup
+        self.setWindowState(Qt.WindowFullScreen)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.X11BypassWindowManagerHint)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setGeometry(x, y, width, height)
+        
+        # Layout container
+        # We use absolute positioning for Toolbar (it floats), 
+        # but SnippingWidget should fill the window.
+        
+        self.snipping_widget = SnippingWidget(controller, pixmap)
+        self.snipping_widget.setParent(self)
+        self.snipping_widget.resize(width, height)
+        self.snipping_widget.move(0, 0)
+        
+        # Toolbar
+        self.toolbar = Toolbar(self)
+        self.toolbar.hide() # Hidden by default
+        
+        # Connect Toolbar Buttons
+        self.toolbar.btn_close.clicked.connect(self.handle_cancel_or_exit)
+        self.toolbar.btn_confirm.clicked.connect(self.handle_confirm_click)
+        # self.toolbar.btn_save.clicked.connect(...)
+        
+        self.show()
+
+    def resizeEvent(self, event):
+        self.snipping_widget.resize(event.size())
+        super().resizeEvent(event)
+
+    def handle_confirm_click(self):
+        self.controller.capture_selection()
+        QTimer.singleShot(0, self.close_all)
+
+    def handle_cancel_or_exit(self):
+        """Handle cancel or exit operation for both right-click and Esc key."""
+        # If there's a pending selection, exit directly
+        if not self.controller.get_pending_selection_rect().isNull():
+            self.close_all()
+        # If there's a real selection, cancel it; otherwise exit
+        elif not self.controller.cancel_selection():
+            self.close_all()
+
+    def close_all(self):
+        # We need to tell the controller to close ALL snipper windows,
+        # otherwise we might just close this one screen's window.
+        # The controller listens to 'closed' signal usually?
+        # Actually in main.py:
+        # snipper.closed.connect(self.on_snipper_closed)
+        # on_snipper_closed -> close_all_snippers
+        # So closing this window is enough to trigger the chain.
+        QTimer.singleShot(0, self.close)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.handle_cancel_or_exit()
         elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             self.controller.capture_selection()
-            QTimer.singleShot(0, self.close)
+            self.close_all()
 
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            # Only handle double click if there's a real selection
-            if not self.controller.selection_rect.isNull():
-                # Check if double click is inside the selection
-                if self.controller.selection_rect.contains(event.globalPos()):
-                    self.controller.capture_selection()
-                    QTimer.singleShot(0, self.close)
+    def update_toolbar_position(self):
+        # Update Toolbar Position
+        # Use controller to determine the unique snipper that should show the toolbar
+        if not self.controller.selection_rect.isNull() and self == self.controller.get_active_toolbar_snipper():
+             global_sel = self.controller.selection_rect
+             # Convert global selection rect to local coordinates
+             offset = -self.screen_geometry.topLeft()
+             local_sel = global_sel.translated(offset)
+             self.toolbar.update_position(local_sel, self.rect())
+             self.toolbar.raise_() # Ensure toolbar is on top of snipping widget
+        else:
+             self.toolbar.hide()
 
     def closeEvent(self, event):
         self.closed.emit()
