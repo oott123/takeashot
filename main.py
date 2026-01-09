@@ -603,6 +603,9 @@ class ScreenshotApp(QObject):
         # Cancel real selection first
         if not self.selection_rect.isNull():
             self.selection_rect = QRect()
+            self.annotation_manager.cancel_tool()
+            for snipper in self.snippers:
+                snipper.reset_toolbar_tool()
             self.update_snippets()
             return True
         

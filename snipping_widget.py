@@ -1,6 +1,7 @@
 from PyQt5.QtQuickWidgets import QQuickWidget
 from PyQt5.QtWidgets import QWidget
-from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint, QUrl
+from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint, QUrl, QMetaObject, Q_ARG, QVariant
+
 from PyQt5.QtGui import QPainter, QColor, QBrush, QPen, QRegion
 
 class SnippingWidget(QWidget):
@@ -257,6 +258,11 @@ class SnippingWindow(QWidget):
             self.close_all()
         elif event.key() == Qt.Key_Delete:
             self.controller.delete_selected_annotation()
+
+    def reset_toolbar_tool(self, tool_name="pointer"):
+        root = self.toolbar.rootObject()
+        if root:
+            QMetaObject.invokeMethod(root, "selectTool", Qt.DirectConnection, Q_ARG(QVariant, tool_name))
 
     def update_toolbar_position(self):
         # Update Toolbar Position

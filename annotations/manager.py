@@ -155,6 +155,9 @@ class AnnotationManager:
 
     def reset(self):
         self.items = []
+        self.cancel_tool()
+
+    def cancel_tool(self):
         self.current_tool = 'pointer'
         self.active_item = None
         self.selected_item = None
@@ -163,3 +166,4 @@ class AnnotationManager:
         self.is_resizing = False
         self.is_rotating = False
         self.active_handle = None
+

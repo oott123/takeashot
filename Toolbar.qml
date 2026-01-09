@@ -18,6 +18,14 @@ Item {
     signal confirmRequested()
     signal toolSelected(string toolName)
 
+    function selectTool(name) {
+        if (name === "pointer") pointerBtn.checked = true
+        else if (name === "pencil") pencilBtn.checked = true
+        else if (name === "line") lineBtn.checked = true
+        else if (name === "rect") rectBtn.checked = true
+        else if (name === "ellipse") ellipseBtn.checked = true
+    }
+
     // The actual visible toolbar
     Rectangle {
         id: toolbarRect
