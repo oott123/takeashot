@@ -184,6 +184,7 @@ class SnippingWindow(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.X11BypassWindowManagerHint)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setGeometry(x, y, width, height)
+        self.setMouseTracking(True)
         
         # Layout container
         # We use absolute positioning for Toolbar (it floats), 
@@ -338,3 +339,17 @@ class SnippingWindow(QWidget):
     def closeEvent(self, event):
         self.closed.emit()
         super().closeEvent(event)
+
+    def mousePressEvent(self, event):
+        # Forward to snipping_widget if it didn't handle it directly
+        # (This happens when Toolbar ignores the event)
+        self.snipping_widget.mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.snipping_widget.mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        self.snipping_widget.mouseDoubleClickEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.snipping_widget.mouseMoveEvent(event)
