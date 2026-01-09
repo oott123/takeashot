@@ -38,10 +38,12 @@
           ];
           
           shellHook = ''
+            # a workaround for setting QML and Qt Plugins path correctly
             setQtEnvironment=$(mktemp --suffix .setQtEnvironment)
             makeWrapper "/bin/sh" "$setQtEnvironment" "''${qtWrapperArgs[@]}"
-            export QT_PLUGIN_PATH=$("$setQtEnvironment" -c "echo $QT_PLUGIN_PATH")
-            export QML2_IMPORT_PATH=$("$setQtEnvironment" -c "echo $QML2_IMPORT_PATH")
+            export QT_PLUGIN_PATH="$("$setQtEnvironment" -c 'printenv QT_PLUGIN_PATH')"
+            export QML2_IMPORT_PATH="$("$setQtEnvironment" -c 'printenv NIXPKGS_QT5_QML_IMPORT_PATH')"
+            # end of the workaround, don't touch unless you want to debug for hours
 
             export PYTHONPATH=${pythonEnv}/${pythonEnv.sitePackages}
             python -V
