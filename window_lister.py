@@ -1,75 +1,36 @@
 import dbus
-import dbus.mainloop.pyqt5
-
-# 在导入dbus.service之前设置DBus主循环
-from dbus.mainloop.pyqt5 import DBusQtMainLoop
-DBusQtMainLoop(set_as_default=True)
-
 import tempfile
 import os
 import json
 import time
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
-import dbus.service
-
-
-# Create a metaclass that inherits from both parent metaclasses to resolve the conflict
-class WindowListReceiverMeta(type(QObject), type(dbus.service.Object)):
-    pass
-
-
-class WindowListReceiver(QObject, dbus.service.Object, metaclass=WindowListReceiverMeta):
-    """DBus接收器，接收KWin脚本返回的窗口数据"""
-    
-    windows_received = pyqtSignal(list)
-    
-    def __init__(self, bus, path):
-        QObject.__init__(self)
-        dbus.service.Object.__init__(self, bus, path)
-        self.data = None
-    
-    @dbus.service.method("com.takeashot.Receiver", in_signature='s')
-    def receive(self, json_str):
-        """接收KWin脚本返回的窗口数据"""
-        try:
-            self.data = json.loads(json_str)
-            self.windows_received.emit(self.data)
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse window data: {e}")
-            self.windows_received.emit([])
-        return "OK"
-
 
 class WindowLister(QObject):
     """窗口列表获取器，异步获取KWin窗口列表"""
     
     windows_ready = pyqtSignal(list)
     
-    def __init__(self):
+    def __init__(self, dbus_manager):
         super().__init__()
-        self.receiver = None
-        self.receiver_path = None
+        self.dbus_manager = dbus_manager
         self.timeout_timer = None
         self.script_id = None
         self.temp_file = None
+        self.is_connected = False
     
     def get_windows_async(self):
         """异步获取窗口列表，完成后通过windows_ready信号返回数据"""
         try:
-            # 获取进程ID用于DBus服务命名（添加前缀避免纯数字组件）
-            pid = os.getpid()
-            timestamp = int(time.time() * 1000)
-            receiver_name = f"com.takeashot.screenshot.pid_{pid}"
-            receiver_path = f"/Receiver_{timestamp}"
-            
-            # 注册DBus接收器，显式传递mainloop参数
-            from dbus.mainloop.pyqt5 import DBusQtMainLoop
-            bus = dbus.SessionBus(mainloop=DBusQtMainLoop())
-            
-            bus_name = dbus.service.BusName(receiver_name, bus)
-            self.receiver = WindowListReceiver(bus, receiver_path)
-            self.receiver_path = receiver_path
-            self.receiver.windows_received.connect(self._on_windows_received)
+            # Connect to dbus manager signal
+            if not self.is_connected:
+                self.dbus_manager.windows_received.connect(self._on_windows_received)
+                self.is_connected = True
+
+            # Constants from DbusManager
+            service_name = self.dbus_manager.SERVICE_NAME
+            object_path = self.dbus_manager.OBJECT_PATH
+            interface_name = self.dbus_manager.INTERFACE_NAME
+            method_name = "receive_window_data"
             
             # 生成KWin脚本
             js_code = f"""
@@ -89,7 +50,7 @@ for (var i = list.length - 1; i >= 0; i--) {{
         }});
     }}
 }}
-callDBus("{receiver_name}", "{receiver_path}", "com.takeashot.Receiver", "receive", JSON.stringify(res));
+callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}", JSON.stringify(res));
 """
             
             # 写入临时文件
@@ -98,6 +59,8 @@ callDBus("{receiver_name}", "{receiver_path}", "com.takeashot.Receiver", "receiv
                 self.temp_file = f.name
             
             # 加载并运行KWin脚本
+            # Note: We still need a session bus connection to talk to KWin Scripting
+            bus = dbus.SessionBus()
             obj = bus.get_object('org.kde.KWin', '/Scripting')
             iface = dbus.Interface(obj, 'org.kde.kwin.Scripting')
             
@@ -143,6 +106,15 @@ callDBus("{receiver_name}", "{receiver_path}", "com.takeashot.Receiver", "receiv
             self.timeout_timer.stop()
             self.timeout_timer = None
         
+        # Disconnect from signal to avoid duplicate calls if reused or memory leaks
+        # (Though WindowLister is usually short-lived or single-use per snap session)
+        if self.is_connected:
+            try:
+                self.dbus_manager.windows_received.disconnect(self._on_windows_received)
+            except:
+                pass
+            self.is_connected = False
+        
         # 卸载KWin脚本
         if self.script_id is not None:
             try:
@@ -161,12 +133,3 @@ callDBus("{receiver_name}", "{receiver_path}", "com.takeashot.Receiver", "receiv
             except:
                 pass
             self.temp_file = None
-        
-        # 移除DBus接收器对象
-        if self.receiver:
-            try:
-                self.receiver.remove_from_connection()
-            except:
-                pass
-            self.receiver = None
-            self.receiver_path = None

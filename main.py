@@ -1,5 +1,12 @@
 import sys
 import signal
+
+# Enable High DPI scaling - MUST be set before QApplication creation
+# Also setup DBus loop before other imports that might use it
+import dbus.mainloop.pyqt5
+from dbus.mainloop.pyqt5 import DBusQtMainLoop
+DBusQtMainLoop(set_as_default=True)
+
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
 from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize, QRectF
 from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
@@ -7,8 +14,8 @@ from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWindow
 from window_lister import WindowLister
 from annotations.manager import AnnotationManager
+from dbus_manager import DbusManager
 
-# Enable High DPI scaling - MUST be set before QApplication creation
 if hasattr(Qt, 'AA_EnableHighDpiScaling'):
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
 if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
@@ -19,6 +26,21 @@ class ScreenshotApp(QObject):
         super().__init__()
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
+        
+        # Initialize DBus Manager
+        self.dbus_manager = DbusManager()
+        
+        # Single Instance Check
+        if not self.dbus_manager.register_service():
+            print("Another instance is running. Activating it...")
+            if self.dbus_manager.trigger_activate_on_existing_instance():
+                print("Activation successful. Exiting.")
+            else:
+                print("Failed to activate existing instance.")
+            sys.exit(0)
+            
+        print("DBus service registered. This is the primary instance.")
+        self.dbus_manager.activation_requested.connect(self.start_capture)
         
         # Setup Backend
         self.backend = ScreenshotBackend()
@@ -190,7 +212,7 @@ class ScreenshotApp(QObject):
     def _start_window_snapping(self):
         """启动异步窗口列表获取，启用窗口吸附功能"""
         print("Starting window list retrieval for snapping...")
-        self.window_lister = WindowLister()
+        self.window_lister = WindowLister(self.dbus_manager)
         self.window_lister.windows_ready.connect(self._on_windows_ready)
         self.window_lister.get_windows_async()
 
