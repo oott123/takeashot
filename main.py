@@ -15,6 +15,7 @@ from snipping_widget import SnippingWindow
 from window_lister import WindowLister
 from annotations.manager import AnnotationManager
 from dbus_manager import DbusManager
+from input_monitor import GlobalInputMonitor
 
 if hasattr(Qt, 'AA_EnableHighDpiScaling'):
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -40,7 +41,13 @@ class ScreenshotApp(QObject):
             sys.exit(0)
             
         print("DBus service registered. This is the primary instance.")
+        print("DBus service registered. This is the primary instance.")
         self.dbus_manager.activation_requested.connect(self.start_capture)
+        
+        # Input Monitor
+        self.input_monitor = GlobalInputMonitor()
+        self.input_monitor.pause_key_pressed.connect(self.start_capture)
+        self.input_monitor.start()
         
         # Setup Backend
         self.backend = ScreenshotBackend()

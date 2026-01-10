@@ -16,6 +16,7 @@
           virtualenv
           dbus-python
           pillow
+          evdev
           pyqt5
           pyqt5-sip
           sip
