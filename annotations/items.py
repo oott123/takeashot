@@ -9,8 +9,6 @@ class AnnotationItem:
         self.color = QColor(color)
         self.width = width
         self.selected = False
-        self.rect = QRectF(start_pos, QSizeF(0, 0)) # Bounding rect in local coords (relative to pos if we were using it that way, but here simpler to just store geom)
-        
         # For simplicity in this non-QGraphicsView system, let's treat `self.rect` as the Unrotated Bounding Box in Global Coords
         # AND `self.rotation` applies around `self.rect.center()`.
         self.rect = QRectF(start_pos, start_pos)

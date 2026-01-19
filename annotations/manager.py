@@ -42,7 +42,8 @@ class AnnotationManager:
         Returns True if the event was handled by the annotation system.
         Returns False if the caller should handle it (e.g. window selection).
         """
-        self.drag_start_pos = QPointF(pos) # Ensure QPointF
+        pos = QPointF(pos) # Ensure QPointF for all operations
+        self.drag_start_pos = pos
         
         if self.current_tool == 'pointer':
             # 1. Check handles of selected item
