@@ -20,6 +20,8 @@
           pyqt6
           pyqt6-sip
           # sip # Often bundled or not needed explicitly if pyqt6 pulls it
+          pytest
+          pytest-qt
         ]);
       in
       {

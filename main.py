@@ -27,7 +27,7 @@ from input_monitor import GlobalInputMonitor
 class ScreenshotApp(QObject):
     def __init__(self):
         super().__init__()
-        self.app = QApplication(sys.argv)
+        self.app = QApplication.instance() or QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
         
         # Initialize DBus Manager
