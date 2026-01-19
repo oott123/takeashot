@@ -3,13 +3,14 @@ import signal
 
 # Enable High DPI scaling - MUST be set before QApplication creation
 # Also setup DBus loop before other imports that might use it
-import dbus.mainloop.pyqt5
-from dbus.mainloop.pyqt5 import DBusQtMainLoop
-DBusQtMainLoop(set_as_default=True)
+# dbus.mainloop.pyqt5 is NOT needed for PyQt6.QtDBus
+# import dbus.mainloop.pyqt5
+# from dbus.mainloop.pyqt5 import DBusQtMainLoop
+# DBusQtMainLoop(set_as_default=True)
 
-from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
-from PyQt5.QtCore import Qt, QObject, QRect, QPoint, QSize, QRectF
-from PyQt5.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PyQt6.QtCore import Qt, QObject, QRect, QPoint, QSize, QRectF
+from PyQt6.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QImage, QAction
 from screenshot_backend import ScreenshotBackend
 from snipping_widget import SnippingWindow
 from window_lister import WindowLister
@@ -17,10 +18,11 @@ from annotations.manager import AnnotationManager
 from dbus_manager import DbusManager
 from input_monitor import GlobalInputMonitor
 
-if hasattr(Qt, 'AA_EnableHighDpiScaling'):
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
-if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+# PyQt6 handles HighDPI automatically, mostly.
+# if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+#     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+# if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+#     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
 
 class ScreenshotApp(QObject):
     def __init__(self):
@@ -41,7 +43,6 @@ class ScreenshotApp(QObject):
             sys.exit(0)
             
         print("DBus service registered. This is the primary instance.")
-        print("DBus service registered. This is the primary instance.")
         self.dbus_manager.activation_requested.connect(self.start_capture)
         
         # Input Monitor
@@ -61,7 +62,7 @@ class ScreenshotApp(QObject):
             icon = QIcon.fromTheme("accessories-screenshot")
         if icon.isNull():
             # Fallback: create a simple icon programmatically if needed, or use standard icon
-             icon = self.app.style().standardIcon(self.app.style().SP_ComputerIcon)
+             icon = self.app.style().standardIcon(self.app.style().StandardPixmap.SP_ComputerIcon)
              
         self.tray_icon.setIcon(icon)
         self.tray_icon.setToolTip("Take a Shot")
@@ -121,7 +122,7 @@ class ScreenshotApp(QObject):
             self.update_snippets()
 
     def on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.Trigger:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.start_capture()
 
     def start_capture(self):
@@ -277,11 +278,11 @@ class ScreenshotApp(QObject):
             return
 
         # Create result image in physical pixels (NO devicePixelRatio set - we work in raw pixels)
-        result_img = QImage(target_w_phys, target_h_phys, QImage.Format_ARGB32)
-        result_img.fill(Qt.transparent)
+        result_img = QImage(target_w_phys, target_h_phys, QImage.Format.Format_ARGB32)
+        result_img.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(result_img)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
         for snipper, inter, s_dpr in intersecting_data:
             # inter is the intersection rectangle in GLOBAL LOGICAL coordinates
@@ -311,7 +312,7 @@ class ScreenshotApp(QObject):
             painter.drawImage(target_rect, src_image, source_rect)
 
         # Draw Annotations
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.save()
         painter.scale(max_dpr, max_dpr)
         painter.translate(-sel_rect.x(), -sel_rect.y())
@@ -632,7 +633,7 @@ class ScreenshotApp(QObject):
     def run(self):
         # Allow Ctrl+C to kill
         signal.signal(signal.SIGINT, signal.SIG_DFL)
-        sys.exit(self.app.exec_())
+        sys.exit(self.app.exec())
 
 if __name__ == "__main__":
     app = ScreenshotApp()

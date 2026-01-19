@@ -1,25 +1,24 @@
-import dbus
-import dbus.service
-import dbus.mainloop.pyqt5
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtDBus import QDBusConnection, QDBusAbstractAdaptor, QDBusMessage, QDBusInterface
 import json
 
-class DbusAdaptor(dbus.service.Object):
+class DbusAdaptor(QDBusAbstractAdaptor):
     """
     DBus Adaptor to handle incoming DBus calls.
     Proxies calls to the DbusManager via signals.
     """
-    def __init__(self, manager, bus, path):
-        self.manager = manager
-        super().__init__(bus, path)
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.manager = parent
+        self.setAutoRelaySignals(True)
 
-    @dbus.service.method("com.takeashot.Service", in_signature='', out_signature='')
+    @pyqtSlot()
     def activate(self):
         """DBus method to trigger activation (screenshot) in this instance."""
         print("Activation requested via DBus")
         self.manager.activation_requested.emit()
 
-    @dbus.service.method("com.takeashot.Service", in_signature='s', out_signature='s')
+    @pyqtSlot(str)
     def receive_window_data(self, json_str):
         """DBus method to receive window data from KWin script."""
         try:
@@ -28,8 +27,7 @@ class DbusAdaptor(dbus.service.Object):
         except json.JSONDecodeError as e:
             print(f"Failed to parse window data: {e}")
             self.manager.windows_received.emit([])
-        return "OK"
-
+            
 
 class DbusManager(QObject):
     """
@@ -49,9 +47,7 @@ class DbusManager(QObject):
 
     def __init__(self):
         super().__init__()
-        self.bus = dbus.SessionBus()
-        self.bus_name = None
-        self.adaptor = None
+        self.adaptor = DbusAdaptor(self)
         
     def register_service(self):
         """
@@ -59,16 +55,24 @@ class DbusManager(QObject):
         Returns True if successful (acquired name), False otherwise.
         """
         try:
+            connection = QDBusConnection.sessionBus()
+            if not connection.isConnected():
+                print("Cannot connect to the D-Bus session bus.")
+                return False
+
+            if not connection.registerObject(self.OBJECT_PATH, self):
+                print(f"Failed to register object at {self.OBJECT_PATH}")
+                return False
+                
             # Request name, do not replace existing owner, do not queue
-            ret = self.bus.request_name(self.SERVICE_NAME, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
-            
-            if ret == dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER:
-                # We own the name, register the adaptor (object)
-                self.bus_name = dbus.service.BusName(self.SERVICE_NAME, self.bus)
-                self.adaptor = DbusAdaptor(self, self.bus, self.OBJECT_PATH)
+            # QDBusConnection.registerService handles the low-level name requesting
+            if connection.registerService(self.SERVICE_NAME):
                 print(f"DBus service registered: {self.SERVICE_NAME}")
                 return True
             else:
+                # We failed to register the service, likely because another instance holds it
+                # Make sure we unregister the object so we don't handle calls unintentionally if we stay alive (though we exit)
+                connection.unregisterObject(self.OBJECT_PATH)
                 print(f"DBus service {self.SERVICE_NAME} already exists.")
                 return False
         except Exception as e:
@@ -80,10 +84,14 @@ class DbusManager(QObject):
         Attempts to call the activate method on an existing instance.
         """
         try:
-            obj = self.bus.get_object(self.SERVICE_NAME, self.OBJECT_PATH)
-            iface = dbus.Interface(obj, self.INTERFACE_NAME)
-            iface.activate()
-            return True
+            # Create an interface to the existing service
+            iface = QDBusInterface(self.SERVICE_NAME, self.OBJECT_PATH, self.INTERFACE_NAME, QDBusConnection.sessionBus())
+            if iface.isValid():
+                iface.call("activate")
+                return True
+            else:
+                print("Invalid DBus interface to existing instance.")
+                return False
         except Exception as e:
             print(f"Failed to activate existing instance: {e}")
             return False

@@ -1,9 +1,9 @@
-import dbus
 import tempfile
 import os
 import json
 import time
-from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtDBus import QDBusInterface, QDBusConnection, QDBusMessage
 
 class WindowLister(QObject):
     """窗口列表获取器，异步获取KWin窗口列表"""
@@ -15,6 +15,7 @@ class WindowLister(QObject):
         self.dbus_manager = dbus_manager
         self.timeout_timer = None
         self.script_id = None
+        self.plugin_name = None
         self.temp_file = None
         self.is_connected = False
     
@@ -58,21 +59,45 @@ callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}",
                 f.write(js_code)
                 self.temp_file = f.name
             
-            # 加载并运行KWin脚本
-            # Note: We still need a session bus connection to talk to KWin Scripting
-            bus = dbus.SessionBus()
-            obj = bus.get_object('org.kde.KWin', '/Scripting')
-            iface = dbus.Interface(obj, 'org.kde.kwin.Scripting')
+            # 加载并运行KWin脚本 using QDBusInterface
+            scripting_iface = QDBusInterface(
+                'org.kde.KWin', 
+                '/Scripting', 
+                'org.kde.kwin.Scripting', 
+                QDBusConnection.sessionBus()
+            )
             
-            plugin_name = f"takeashot_{int(time.time() * 1000)}"
-            self.script_id = iface.loadScript(self.temp_file, plugin_name, signature='ss')
+            if not scripting_iface.isValid():
+                print(f"Error: Invalid DBus interface for KWin Scripting: {scripting_iface.lastError().message()}")
+                self.windows_ready.emit([])
+                self._cleanup()
+                return
+
+            self.plugin_name = f"takeashot_{int(time.time() * 1000)}"
+            # loadScript(path, pluginName) returns int scriptId
+            reply = scripting_iface.call('loadScript', self.temp_file, self.plugin_name)
             
+            if reply.type() == QDBusMessage.MessageType.ErrorMessage:
+                print(f"Failed to load KWin script: {reply.errorMessage()}")
+                self.windows_ready.emit([])
+                self._cleanup()
+                return
+                
+            self.script_id = int(reply.arguments()[0])
+            
+            # Run the script
             script_path = f"/Scripting/Script{self.script_id}"
-            script_obj = bus.get_object('org.kde.KWin', script_path)
-            script_iface = dbus.Interface(script_obj, 'org.kde.kwin.Script')
+            script_iface = QDBusInterface(
+                'org.kde.KWin', 
+                script_path, 
+                'org.kde.kwin.Script', 
+                QDBusConnection.sessionBus()
+            )
             
-            # 运行脚本
-            script_iface.run()
+            if script_iface.isValid():
+                script_iface.call('run')
+            else:
+                print("Failed to get script interface")
             
             # 设置超时（2秒）
             self.timeout_timer = QTimer()
@@ -82,6 +107,8 @@ callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}",
             
         except Exception as e:
             print(f"Failed to start window list retrieval: {e}")
+            import traceback
+            traceback.print_exc()
             self.windows_ready.emit([])
             self._cleanup()
     
@@ -107,7 +134,6 @@ callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}",
             self.timeout_timer = None
         
         # Disconnect from signal to avoid duplicate calls if reused or memory leaks
-        # (Though WindowLister is usually short-lived or single-use per snap session)
         if self.is_connected:
             try:
                 self.dbus_manager.windows_received.disconnect(self._on_windows_received)
@@ -116,15 +142,20 @@ callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}",
             self.is_connected = False
         
         # 卸载KWin脚本
-        if self.script_id is not None:
+        if self.script_id is not None and self.plugin_name:
             try:
-                bus = dbus.SessionBus()
-                obj = bus.get_object('org.kde.KWin', '/Scripting')
-                iface = dbus.Interface(obj, 'org.kde.kwin.Scripting')
-                iface.unloadScript(f"takeashot_{self.script_id}")
-            except:
-                pass
+                scripting_iface = QDBusInterface(
+                    'org.kde.KWin', 
+                    '/Scripting', 
+                    'org.kde.kwin.Scripting', 
+                    QDBusConnection.sessionBus()
+                )
+                if scripting_iface.isValid():
+                    scripting_iface.call('unloadScript', self.plugin_name)
+            except Exception as e:
+                print(f"Error unloading script: {e}")
             self.script_id = None
+            self.plugin_name = None
         
         # 删除临时文件
         if self.temp_file and os.path.exists(self.temp_file):

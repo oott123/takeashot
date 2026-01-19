@@ -1,13 +1,13 @@
 import math
-from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF
-from PyQt5.QtGui import QColor
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF
+from PyQt6.QtGui import QColor
 from .items import RectItem, EllipseItem, LineItem, StrokeItem
 
 class AnnotationManager:
     def __init__(self):
         self.items = []
         self.current_tool = 'pointer' # pointer, pencil, line, rect, ellipse
-        self.current_color = Qt.red
+        self.current_color = Qt.GlobalColor.red
         self.current_width = 3
         
         self.active_item = None # Item being drawn or manipulated
@@ -42,7 +42,7 @@ class AnnotationManager:
         Returns True if the event was handled by the annotation system.
         Returns False if the caller should handle it (e.g. window selection).
         """
-        self.drag_start_pos = pos
+        self.drag_start_pos = QPointF(pos) # Ensure QPointF
         
         if self.current_tool == 'pointer':
             # 1. Check handles of selected item
@@ -100,6 +100,7 @@ class AnnotationManager:
         return False
 
     def handle_mouse_move(self, pos):
+        pos = QPointF(pos)
         if self.is_drawing and self.active_item:
             if isinstance(self.active_item, StrokeItem):
                 self.active_item.add_point(pos)
@@ -166,4 +167,5 @@ class AnnotationManager:
         self.is_resizing = False
         self.is_rotating = False
         self.active_handle = None
+
 

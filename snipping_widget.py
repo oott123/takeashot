@@ -1,8 +1,7 @@
-from PyQt5.QtQuickWidgets import QQuickWidget
-from PyQt5.QtWidgets import QWidget
-from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint, QUrl, QMetaObject, Q_ARG, QVariant
-
-from PyQt5.QtGui import QPainter, QColor, QBrush, QPen, QRegion
+from PyQt6.QtQuickWidgets import QQuickWidget
+from PyQt6.QtWidgets import QWidget
+from PyQt6.QtCore import Qt, QRect, QSize, pyqtSignal, QTimer, QPoint, QUrl, QMetaObject, Q_ARG, QVariant
+from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QRegion
 
 class SnippingWidget(QWidget):
     """
@@ -16,13 +15,13 @@ class SnippingWidget(QWidget):
         
         # We need mouse tracking to show handles/cursor
         self.setMouseTracking(True)
-        self.setCursor(Qt.CrossCursor)
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         
         # 0. Fill background black (in case of geometry mismatch)
-        painter.fillRect(self.rect(), Qt.black)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
         
         # 1. Draw the captured screen
         painter.drawPixmap(0, 0, self.full_pixmap)
@@ -55,13 +54,13 @@ class SnippingWidget(QWidget):
             region_pending = QRegion(local_pending)
             region_overlay = region_all.subtracted(region_pending)
             
-            for rect in region_overlay.rects():
+            for rect in region_overlay:
                 painter.fillRect(rect, overlay_color)
             
             # Draw pending selection border (same color as real selection)
             pen = QPen(QColor(0, 120, 215), 1)
             painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(local_pending)
             
             # Don't draw handles for pending selection
@@ -74,13 +73,13 @@ class SnippingWidget(QWidget):
             region_sel = QRegion(local_sel)
             region_overlay = region_all.subtracted(region_sel)
             
-            for rect in region_overlay.rects():
+            for rect in region_overlay:
                 painter.fillRect(rect, overlay_color)
             
             # Draw selection border
             pen = QPen(QColor(0, 120, 215), 1)
             painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(local_sel)
             
             # Draw annotations (Clipped to selection)
@@ -129,23 +128,23 @@ class SnippingWidget(QWidget):
                 painter.drawRect(local_handle)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.controller.on_mouse_press(event.globalPos())
-        elif event.button() == Qt.RightButton:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.controller.on_mouse_press(event.globalPosition().toPoint())
+        elif event.button() == Qt.MouseButton.RightButton:
             # Propagate up to window to handle close
             self.window().handle_cancel_or_exit()
 
     def mouseMoveEvent(self, event):
-        global_pos = event.globalPos()
+        global_pos = event.globalPosition().toPoint()
         
         if not self.controller.is_selecting:
             handle = self.controller.get_handle_at(global_pos)
-            if handle in ['tl', 'br']: self.setCursor(Qt.SizeFDiagCursor)
-            elif handle in ['tr', 'bl']: self.setCursor(Qt.SizeBDiagCursor)
-            elif handle in ['t', 'b']: self.setCursor(Qt.SizeVerCursor)
-            elif handle in ['l', 'r']: self.setCursor(Qt.SizeHorCursor)
-            elif handle == 'move': self.setCursor(Qt.SizeAllCursor)
-            else: self.setCursor(Qt.CrossCursor)
+            if handle in ['tl', 'br']: self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            elif handle in ['tr', 'bl']: self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+            elif handle in ['t', 'b']: self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif handle in ['l', 'r']: self.setCursor(Qt.CursorShape.SizeHorCursor)
+            elif handle == 'move': self.setCursor(Qt.CursorShape.SizeAllCursor)
+            else: self.setCursor(Qt.CursorShape.CrossCursor)
         
         self.controller.on_mouse_move(global_pos)
         
@@ -153,15 +152,15 @@ class SnippingWidget(QWidget):
         self.window().update_toolbar_position()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             self.controller.on_mouse_release()
             # Toolbar might need to appear now
             self.window().update_toolbar_position()
 
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             if not self.controller.selection_rect.isNull():
-                if self.controller.selection_rect.contains(event.globalPos()):
+                if self.controller.selection_rect.contains(event.globalPosition().toPoint()):
                     self.controller.capture_selection()
                     self.window().close_all()
 
@@ -181,9 +180,9 @@ class SnippingWindow(QWidget):
         # or we let the widget hold it. The Widget needs it for paint.
         
         # Window Setup
-        self.setWindowState(Qt.WindowFullScreen)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.X11BypassWindowManagerHint)
-        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setWindowState(Qt.WindowState.WindowFullScreen)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool | Qt.WindowType.X11BypassWindowManagerHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setGeometry(x, y, width, height)
         self.setMouseTracking(True)
         
@@ -199,13 +198,13 @@ class SnippingWindow(QWidget):
         # Toolbar (QQuickWidget)
         self.toolbar = QQuickWidget(self)
         self.toolbar.setSource(QUrl.fromLocalFile("Toolbar.qml"))
-        if self.toolbar.status() == QQuickWidget.Error:
+        if self.toolbar.status() == QQuickWidget.Status.Error:
              for error in self.toolbar.errors():
                  print("QML Error:", error.toString())
         
-        self.toolbar.setResizeMode(QQuickWidget.SizeRootObjectToView)
-        self.toolbar.setAttribute(Qt.WA_AlwaysStackOnTop)
-        self.toolbar.setClearColor(Qt.transparent)
+        self.toolbar.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self.toolbar.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop)
+        self.toolbar.setClearColor(Qt.GlobalColor.transparent)
         self.toolbar.hide() # Hidden by default
         
         # Connect QML Signals
@@ -229,6 +228,8 @@ class SnippingWindow(QWidget):
 
     def handle_confirm_click(self):
         self.controller.capture_selection()
+        # QTimer.singleShot(0, self.close_all) 
+        # But for PyQt6 we might just pass the method
         QTimer.singleShot(0, self.close_all)
 
     def handle_cancel_or_exit(self):
@@ -251,18 +252,18 @@ class SnippingWindow(QWidget):
         QTimer.singleShot(0, self.close)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             self.handle_cancel_or_exit()
-        elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+        elif event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
             self.controller.capture_selection()
             self.close_all()
-        elif event.key() == Qt.Key_Delete:
+        elif event.key() == Qt.Key.Key_Delete:
             self.controller.delete_selected_annotation()
 
     def reset_toolbar_tool(self, tool_name="pointer"):
         root = self.toolbar.rootObject()
         if root:
-            QMetaObject.invokeMethod(root, "selectTool", Qt.DirectConnection, Q_ARG(QVariant, tool_name))
+            QMetaObject.invokeMethod(root, "selectTool", Qt.ConnectionType.DirectConnection, Q_ARG(QVariant, tool_name))
 
     def update_toolbar_position(self):
         # Update Toolbar Position

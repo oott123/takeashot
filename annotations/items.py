@@ -1,9 +1,9 @@
 import math
-from PyQt5.QtCore import Qt, QPointF, QRectF, QSizeF
-from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath, QTransform
+from PyQt6.QtCore import Qt, QPointF, QRectF, QSizeF
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath, QTransform, QPainterPathStroker
 
 class AnnotationItem:
-    def __init__(self, start_pos, color=Qt.red, width=2):
+    def __init__(self, start_pos, color=Qt.GlobalColor.red, width=2):
         self.pos = start_pos  # Global position (usually center or top-left depending on item)
         self.rotation = 0.0   # Degrees
         self.color = QColor(color)
@@ -55,8 +55,8 @@ class AnnotationItem:
         r = self.rect
         h = 6 # Handle size
         
-        pen = QPen(Qt.blue, 1)
-        brush = QBrush(Qt.white)
+        pen = QPen(Qt.GlobalColor.blue, 1)
+        brush = QBrush(Qt.GlobalColor.white)
         painter.setPen(pen)
         painter.setBrush(brush)
         
@@ -118,9 +118,9 @@ class RectItem(AnnotationItem):
         painter.setTransform(t, combine=True)
         
         pen = QPen(self.color, self.width)
-        # pen.setJoinStyle(Qt.MiterJoin)
+        # pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(self.rect)
         
         if self.selected:
@@ -142,13 +142,13 @@ class EllipseItem(RectItem):
         
         pen = QPen(self.color, self.width)
         painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(self.rect)
         
         painter.restore()
 
 class LineItem(AnnotationItem):
-    def __init__(self, start_pos, color=Qt.red, width=2):
+    def __init__(self, start_pos, color=Qt.GlobalColor.red, width=2):
         super().__init__(start_pos, color, width)
         self.p1 = start_pos
         self.p2 = start_pos
@@ -168,15 +168,15 @@ class LineItem(AnnotationItem):
         painter.setTransform(t, combine=True)
         
         pen = QPen(self.color, self.width)
-        pen.setCapStyle(Qt.RoundCap)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.drawLine(self.p1, self.p2)
         
         if self.selected:
              # Draw simplistic selection UI for line (endpoints)
              # Note: Handles should be unrotated space
-             pen = QPen(Qt.blue, 1)
-             brush = QBrush(Qt.white)
+             pen = QPen(Qt.GlobalColor.blue, 1)
+             brush = QBrush(Qt.GlobalColor.white)
              painter.setPen(pen)
              painter.setBrush(brush)
              h = 8
@@ -240,7 +240,7 @@ class LineItem(AnnotationItem):
 
 class StrokeItem(AnnotationItem):
     """Freehand pencil stroke"""
-    def __init__(self, start_pos, color=Qt.red, width=2):
+    def __init__(self, start_pos, color=Qt.GlobalColor.red, width=2):
         super().__init__(start_pos, color, width)
         self.points = [start_pos]
         self.path = QPainterPath()
@@ -265,10 +265,10 @@ class StrokeItem(AnnotationItem):
         painter.setTransform(t, combine=True)
 
         pen = QPen(self.color, self.width)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self.path)
         
         if self.selected:
@@ -322,4 +322,3 @@ class StrokeItem(AnnotationItem):
         outline = stroke_path.createStroke(self.path)
         return outline.contains(local_p)
 
-from PyQt5.QtGui import QPainterPathStroker

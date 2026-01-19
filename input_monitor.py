@@ -1,6 +1,6 @@
 import evdev
 import select
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 
 class GlobalInputMonitor(QThread):
     pause_key_pressed = pyqtSignal()

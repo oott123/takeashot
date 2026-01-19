@@ -14,12 +14,12 @@
         pythonEnv = pkgs.python3.withPackages (ps: with ps; [
           pip
           virtualenv
-          dbus-python
+          # dbus-python # Removed in favor of PyQt6.QtDBus
           pillow
           evdev
-          pyqt5
-          pyqt5-sip
-          sip
+          pyqt6
+          pyqt6-sip
+          # sip # Often bundled or not needed explicitly if pyqt6 pulls it
         ]);
       in
       {
@@ -30,12 +30,12 @@
           packages = [
             pythonEnv
 
-            libsForQt5.qt5.wrapQtAppsHook
-            libsForQt5.qt5.qtbase
-            libsForQt5.qt5.qtwayland
-            libsForQt5.qt5.qtdeclarative
-            libsForQt5.qt5.qtquickcontrols
-            libsForQt5.qt5.qtquickcontrols2
+            qt6.qtbase
+            qt6.qtwayland
+            qt6.qtdeclarative
+            qt6.qtquick3d # Maybe needed for some qml? sticking to basics first
+            # qt6.qtquickcontrols2 # Often included in qtdeclarative or qtbase in newer nix versions, but checking...
+            # In qt6, qtquickcontrols2 is usually part of qtdeclarative
           ];
           
           shellHook = ''
