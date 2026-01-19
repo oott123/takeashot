@@ -54,8 +54,10 @@ class SnippingWidget(QWidget):
             region_pending = QRegion(local_pending)
             region_overlay = region_all.subtracted(region_pending)
             
-            for rect in region_overlay:
-                painter.fillRect(rect, overlay_color)
+            painter.save()
+            painter.setClipRegion(region_overlay)
+            painter.fillRect(self.rect(), overlay_color)
+            painter.restore()
             
             # Draw pending selection border (same color as real selection)
             pen = QPen(QColor(0, 120, 215), 1)
@@ -73,8 +75,10 @@ class SnippingWidget(QWidget):
             region_sel = QRegion(local_sel)
             region_overlay = region_all.subtracted(region_sel)
             
-            for rect in region_overlay:
-                painter.fillRect(rect, overlay_color)
+            painter.save()
+            painter.setClipRegion(region_overlay)
+            painter.fillRect(self.rect(), overlay_color)
+            painter.restore()
             
             # Draw selection border
             pen = QPen(QColor(0, 120, 215), 1)
