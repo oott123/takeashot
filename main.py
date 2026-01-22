@@ -464,8 +464,9 @@ class ScreenshotApp(QObject):
                 self.pending_selection_rect = QRect()
                 self.pending_window = None
             elif self.active_handle == 'expand':
-                # Expand operation but no drag - restore original selection
-                self.selection_rect = QRect(self.rect_start_geometry)
+                # Expand operation: keep the expanded selection
+                # The selection was already expanded in on_mouse_press via expand_selection_to_point
+                pass
             elif self.active_handle == 'move':
                 # Has selection state: clicked inside selection - no action
                 pass
