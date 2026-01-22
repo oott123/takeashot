@@ -1,3 +1,10 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*", "prototypes*", ".agent*", ".direnv*", ".git*", ".pytest_cache*", ".vscode*"]
+
 [project]
 name = "takeashot"
 version = "0.1.0"
@@ -6,8 +13,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "dbus-python>=1.4.0",
-    "pillow>=12.1.0",
-    "pyqt5>=5.15.11",
-    "pyqt5-sip>=12.17.2",
-    "sip>=6.15.1",
+    "pillow>=12.0.0",
+    "pyqt6>=6.4.0",
+    "pyqt6-sip>=13.4.0",
 ]
+
+[project.scripts]
+takeashot = "main:main"
