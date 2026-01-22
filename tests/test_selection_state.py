@@ -1,5 +1,7 @@
 import pytest
-from PyQt6.QtCore import Qt, QPoint, QRect, QSize
+from PyQt6.QtCore import Qt, QPoint, QRect, QSize, QEvent
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtTest import QTest
 from main import ScreenshotApp
 
 
@@ -235,7 +237,8 @@ def test_click_outside_selection_keeps_expanded(app, qtbot):
     outside_local = outside_global - screen_geo.topLeft()
 
     qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
-    assert app.active_handle == 'expand'
+    assert app.active_handle.startswith('expand_'), \
+        f"按下位置在选区外，active_handle 应该以 'expand_' 开头，但实际是 '{app.active_handle}'"
 
     # 不移动，直接释放
     qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
@@ -378,7 +381,8 @@ def test_click_outside_selection_should_expand_without_drag(app, qtbot):
     
     # 验证：按下后应该正在选择中
     assert app.is_selecting == True, "按下鼠标后，is_selecting 应该为 True"
-    assert app.active_handle == 'expand', "按下位置在选区外，active_handle 应该为 'expand'"
+    assert app.active_handle.startswith('expand_'), \
+        f"按下位置在选区外，active_handle 应该以 'expand_' 开头，但实际是 '{app.active_handle}'"
     
     # 验证：选区应该已经扩展到包含点击位置
     print(f"Selection rect after press: {app.selection_rect}")
@@ -509,3 +513,435 @@ def test_click_outside_selection_large_drag(app, qtbot):
     target_global = QPoint(screen_geo.left() + 399, screen_geo.top() + 299)  # 在点击位置内部
     assert app.selection_rect.contains(target_global), \
         f"点击选区外后拖拽，选区应该包含点击位置附近的 {target_global}，但选区是 {app.selection_rect}"
+
+
+def test_expand_from_left_edge_drag(app, qtbot):
+    """
+    测试：点击选区左边扩展后，拖拽可以改变选区宽度（左右方向）
+    
+    场景：
+    1. 创建初始选区
+    2. 在选区左边点击（扩展左边）
+    3. 向左拖拽鼠标
+    4. 验证选区宽度随拖拽改变，但高度不变
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+    original_width = original_rect.width()
+    original_height = original_rect.height()
+
+    # 在选区左边点击（x 在选区左边外面）
+    left_click_global = QPoint(screen_geo.left() + 50, screen_geo.top() + 150)
+    left_click_local = left_click_global - screen_geo.topLeft()
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=left_click_local)
+    assert app.active_handle == 'expand_l', f"点击左边，active_handle 应该为 'expand_l'，实际是 '{app.active_handle}'"
+
+    # 向左拖拽（改变宽度）
+    drag_end_global = QPoint(screen_geo.left() + 20, screen_geo.top() + 150)
+    drag_end_local = drag_end_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=drag_end_local)
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=drag_end_local)
+
+    # 验证状态重置
+    assert app.is_selecting == False
+    assert app.is_dragging == False
+
+    # 验证选区向左扩展了（left 变小）
+    assert app.selection_rect.left() < original_rect.left(), \
+        f"向左拖拽后选区左边应该小于原始左边 {original_rect.left()}，实际 {app.selection_rect.left()}"
+    # 验证选区宽度增加了
+    assert app.selection_rect.width() > original_width, \
+        f"向左拖拽后选区宽度应该增大，实际 {app.selection_rect.width()} <= {original_width}"
+
+
+def test_expand_from_top_edge_drag(app, qtbot):
+    """
+    测试：点击选区上边扩展后，拖拽可以改变选区高度（上下方向）
+    
+    场景：
+    1. 创建初始选区
+    2. 在选区上边点击（扩展上边）
+    3. 向上拖拽鼠标
+    4. 验证选区高度随拖拽改变，但宽度不变
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+    original_width = original_rect.width()
+    original_height = original_rect.height()
+
+    # 在选区上边点击（y 在选区上边外面）
+    top_click_global = QPoint(screen_geo.left() + 150, screen_geo.top() + 50)
+    top_click_local = top_click_global - screen_geo.topLeft()
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=top_click_local)
+    assert app.active_handle == 'expand_t', f"点击上边，active_handle 应该为 'expand_t'，实际是 '{app.active_handle}'"
+
+    # 向上拖拽（改变高度）
+    drag_end_global = QPoint(screen_geo.left() + 150, screen_geo.top() + 20)
+    drag_end_local = drag_end_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=drag_end_local)
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=drag_end_local)
+
+    # 验证状态重置
+    assert app.is_selecting == False
+    assert app.is_dragging == False
+
+    # 验证选区向上扩展了（top 变小）
+    assert app.selection_rect.top() < original_rect.top(), \
+        f"向上拖拽后选区上边应该小于原始上边 {original_rect.top()}，实际 {app.selection_rect.top()}"
+    # 验证选区高度增加了
+    assert app.selection_rect.height() > original_height, \
+        f"向上拖拽后选区高度应该增大，实际 {app.selection_rect.height()} <= {original_height}"
+
+
+def test_expand_from_corner_drag(app, qtbot):
+    """
+    测试：点击选区右下角扩展后，拖拽可以同时改变宽度和高度
+    
+    场景：
+    1. 创建初始选区
+    2. 在选区右下角外面点击（扩展右下角）
+    3. 向右下角拖拽鼠标
+    4. 验证选区宽度和高度都随拖拽改变
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+    original_width = original_rect.width()
+    original_height = original_rect.height()
+
+    # 在选区右下角外面点击（x 和 y 都在选区外面）
+    corner_click_global = QPoint(screen_geo.left() + 350, screen_geo.top() + 250)
+    corner_click_local = corner_click_global - screen_geo.topLeft()
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=corner_click_local)
+    assert app.active_handle == 'expand_br', \
+        f"点击右下角，active_handle 应该为 'expand_br'，实际是 '{app.active_handle}'"
+
+    # 向右下角拖拽
+    drag_end_global = QPoint(screen_geo.left() + 400, screen_geo.top() + 300)
+    drag_end_local = drag_end_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=drag_end_local)
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=drag_end_local)
+
+    # 验证状态重置
+    assert app.is_selecting == False
+    assert app.is_dragging == False
+
+    # 验证选区宽度和高度都改变了
+    assert app.selection_rect.width() > original_width, \
+        f"向右下角拖拽后选区宽度应该增大，实际 {app.selection_rect.width()} <= {original_width}"
+    assert app.selection_rect.height() > original_height, \
+        f"向右下角拖拽后选区高度应该增大，实际 {app.selection_rect.height()} <= {original_height}"
+
+
+def test_expand_from_left_only_changes_width(app, qtbot):
+    """
+    测试：点击选区左边扩展后，上下拖拽不应该改变高度
+    
+    场景：
+    1. 创建初始选区
+    2. 在选区左边点击（扩展左边）
+    3. 向上下方向拖拽鼠标
+    4. 验证选区高度不变
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+    original_height = original_rect.height()
+
+    # 在选区左边点击
+    left_click_global = QPoint(screen_geo.left() + 50, screen_geo.top() + 150)
+    left_click_local = left_click_global - screen_geo.topLeft()
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=left_click_local)
+
+    # 向上拖拽（只改变 y）
+    drag_up_global = QPoint(screen_geo.left() + 50, screen_geo.top() + 100)
+    drag_up_local = drag_up_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=drag_up_local)
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=drag_up_local)
+
+    # 验证：高度应该不变（因为是从左边扩展）
+    assert app.selection_rect.height() == original_height, \
+        f"从左边扩展后向上拖拽，高度应该不变，实际 {app.selection_rect.height()} != {original_height}"
+
+
+def _assert_rect_contains_point(rect, point, axis='both'):
+    """
+    辅助函数：验证选区包含点
+    考虑 QRect 边界计算差异（right = left + width - 1）
+    """
+    if axis in ['both', 'x']:
+        # 选区的右边可能比点坐标大 1（边界计算）
+        assert rect.left() <= point.x() <= rect.right() + 1, \
+            f"点 x={point.x()} 不在选区 x 范围内 [{rect.left()}, {rect.right()}]"
+    if axis in ['both', 'y']:
+        assert rect.top() <= point.y() <= rect.bottom() + 1, \
+            f"点 y={point.y()} 不在选区 y 范围内 [{rect.top()}, {rect.bottom()}]"
+
+
+def test_expand_follows_mouse_position(app, qtbot):
+    """
+    测试：点击选区外后拖动，拖动到哪里选区就到哪里
+    
+    场景：
+    1. 创建初始选区 [100, 100] 到 [300, 200]
+    2. 在选区右边 100px 的位置点击 → 选区右边扩展到该位置
+    3. 继续往右移动 50px → 选区右边应该继续扩展 50px，总共 150px
+    4. 验证选区包含鼠标位置
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+    original_right = original_rect.right()
+    original_width = original_rect.width()
+
+    # 在选区右边 100px 位置点击
+    click1_global = QPoint(screen_geo.left() + original_right + 100, screen_geo.top() + 150)
+    click1_local = click1_global - screen_geo.topLeft()
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=click1_local)
+
+    # 验证点击后选区包含点击位置
+    _assert_rect_contains_point(app.selection_rect, click1_global, 'x')
+
+    # 继续往右移动 50px（超过拖拽阈值）
+    click2_global = QPoint(screen_geo.left() + original_right + 150, screen_geo.top() + 150)
+    click2_local = click2_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=click2_local)
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=click2_local)
+
+    # 关键验证：选区包含最终鼠标位置
+    _assert_rect_contains_point(app.selection_rect, click2_global, 'x')
+    
+    # 选区宽度应该增加约 150px（100 + 50）
+    expected_min_width = original_width + 100  # 至少增加 100px
+    assert app.selection_rect.width() >= expected_min_width, \
+        f"选区宽度应该至少增加 100px，实际 {app.selection_rect.width()}，原始 {original_width}"
+
+
+def test_expand_left_follows_mouse(app, qtbot):
+    """
+    测试：点击选区左边后拖动，选区左边跟随鼠标位置
+    
+    场景：
+    1. 创建初始选区
+    2. 在选区左边点击
+    3. 向左拖动，选区左边跟随鼠标
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+    original_left = original_rect.left()
+    original_width = original_rect.width()
+
+    # 在选区左边 50px 位置点击
+    click1_global = QPoint(screen_geo.left() + original_left - 50, screen_geo.top() + 150)
+    click1_local = click1_global - screen_geo.topLeft()
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=click1_local)
+
+    # 验证点击后选区包含点击位置
+    _assert_rect_contains_point(app.selection_rect, click1_global, 'x')
+
+    # 继续往左移动 30px
+    click2_global = QPoint(screen_geo.left() + original_left - 80, screen_geo.top() + 150)
+    click2_local = click2_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=click2_local)
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=click2_local)
+
+    # 关键验证：选区包含最终鼠标位置
+    _assert_rect_contains_point(app.selection_rect, click2_global, 'x')
+    
+    # 选区宽度应该增加
+    expected_min_width = original_width + 30
+    assert app.selection_rect.width() >= expected_min_width, \
+        f"选区宽度应该至少增加 30px，实际 {app.selection_rect.width()}"
+
+
+def test_expand_corner_follows_both_axes(app, qtbot):
+    """
+    测试：点击选区右下角后拖动，选区右下角跟随鼠标位置
+    
+    场景：
+    1. 创建初始选区
+    2. 在选区右下角外面点击
+    3. 向右下角拖动，选区右下角同时跟随 x 和 y
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+    original_right = original_rect.right()
+    original_bottom = original_rect.bottom()
+    original_width = original_rect.width()
+    original_height = original_rect.height()
+
+    # 在选区右下角外面点击
+    click1_global = QPoint(screen_geo.left() + original_right + 100, screen_geo.top() + original_bottom + 100)
+    click1_local = click1_global - screen_geo.topLeft()
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=click1_local)
+
+    # 验证点击后选区包含点击位置
+    _assert_rect_contains_point(app.selection_rect, click1_global)
+
+    # 继续往右下角移动
+    click2_global = QPoint(screen_geo.left() + original_right + 150, screen_geo.top() + original_bottom + 150)
+    click2_local = click2_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=click2_local)
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=click2_local)
+
+    # 验证：选区包含最终鼠标位置
+    _assert_rect_contains_point(app.selection_rect, click2_global)
+    
+    # 选区宽度和高度都应该增加
+    assert app.selection_rect.width() >= original_width + 50, \
+        f"选区宽度应该至少增加 50px，实际 {app.selection_rect.width()}"
+    assert app.selection_rect.height() >= original_height + 50, \
+        f"选区高度应该至少增加 50px，实际 {app.selection_rect.height()}"
+
+
+def test_cursor_shape_outside_selection_left(app, qtbot):
+    """
+    测试：鼠标在选区左边时，光标应该是水平缩放
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    print(f"TEST: Before press - is_selecting={app.is_selecting}")
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    print(f"TEST: After press - is_selecting={app.is_selecting}")
+    
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    print(f"TEST: After move1 - is_selecting={app.is_selecting}")
+    
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+    print(f"TEST: After release - is_selecting={app.is_selecting}")
+
+    # 鼠标移动到选区左边
+    left_pos_global = QPoint(screen_geo.left() + 50, screen_geo.top() + 150)

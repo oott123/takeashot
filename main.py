@@ -370,8 +370,11 @@ class ScreenshotApp(QObject):
                 self.active_handle = 'move'
             else:
                 # Clicked outside selection - expand selection to include the point
-                self.active_handle = 'expand'
-                self.expand_selection_to_point(global_pos)
+                expand_sides = self.expand_selection_to_point(global_pos)
+                if expand_sides:
+                    self.active_handle = 'expand_' + expand_sides
+                else:
+                    self.active_handle = 'move'  # Clicked inside, shouldn't happen but fallback
         else:
             # No selection state
             # Will start new selection on drag
@@ -431,8 +434,22 @@ class ScreenshotApp(QObject):
                 # Moving existing selection
                 delta = global_pos - self.drag_start_pos
                 self.selection_rect = self.rect_start_geometry.translated(delta)
+            elif self.active_handle and self.active_handle.startswith('expand_'):
+                # Expanding selection: the expanded edge follows the mouse position
+                # New edge position = global mouse position
+                expand_sides = self.active_handle[7:]  # Remove 'expand_' prefix
+                r = self.rect_start_geometry
+                
+                new_r = QRect(r)
+                
+                if 'l' in expand_sides: new_r.setLeft(global_pos.x())
+                if 'r' in expand_sides: new_r.setRight(global_pos.x())
+                if 't' in expand_sides: new_r.setTop(global_pos.y())
+                if 'b' in expand_sides: new_r.setBottom(global_pos.y())
+                
+                self.selection_rect = new_r.normalized()
             elif self.active_handle in ['tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l']:
-                # Resizing selection
+                # Resizing selection from handles
                 r = self.rect_start_geometry
                 dx = global_pos.x() - self.drag_start_pos.x()
                 dy = global_pos.y() - self.drag_start_pos.y()
@@ -463,9 +480,8 @@ class ScreenshotApp(QObject):
                 self.selection_rect = QRect(self.pending_selection_rect)
                 self.pending_selection_rect = QRect()
                 self.pending_window = None
-            elif self.active_handle == 'expand':
+            elif self.active_handle and self.active_handle.startswith('expand_'):
                 # Expand operation: keep the expanded selection
-                # The selection was already expanded in on_mouse_press via expand_selection_to_point
                 pass
             elif self.active_handle == 'move':
                 # Has selection state: clicked inside selection - no action
@@ -562,15 +578,25 @@ class ScreenshotApp(QObject):
         扩大策略：
         1. 如果扩大一个方向就能覆盖点，则只扩大一个方向
         2. 如果扩大一个方向不能覆盖，则扩大两个方向
+        
+        返回扩展的方向字符串：
+        - 'l': 左边
+        - 'r': 右边
+        - 't': 上边
+        - 'b': 下边
+        - 'lt': 左上角（左边和上边）
+        - 'lb': 左下角
+        - 'rt': 右上角
+        - 'rb': 右下角
         """
         if self.selection_rect.isNull():
-            return
+            return None
         
         r = self.selection_rect
         
         # 检查点是否在选区内
         if r.contains(point):
-            return
+            return None
         
         # 计算新的边界
         new_left = r.left()
@@ -578,16 +604,23 @@ class ScreenshotApp(QObject):
         new_top = r.top()
         new_bottom = r.bottom()
         
+        # 记录扩展的方向
+        expand_sides = []
+        
         # 根据点的位置决定扩大哪些方向
         if point.x() < r.left():
             new_left = point.x()
+            expand_sides.append('l')
         elif point.x() > r.right():
             new_right = point.x()
+            expand_sides.append('r')
         
         if point.y() < r.top():
             new_top = point.y()
+            expand_sides.append('t')
         elif point.y() > r.bottom():
             new_bottom = point.y()
+            expand_sides.append('b')
         
         # 创建新的选区
         self.selection_rect = QRect(new_left, new_top, 
@@ -596,6 +629,9 @@ class ScreenshotApp(QObject):
         
         # 更新界面
         self.update_snippets()
+        
+        # 返回扩展方向（按 l, r, t, b 排序）
+        return ''.join(sorted(expand_sides))
     
     def get_pending_selection_rect(self):
         """获取拟选中矩形"""
