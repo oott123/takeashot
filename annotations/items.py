@@ -58,6 +58,12 @@ class AnnotationItem:
         painter.setPen(pen)
         painter.setBrush(brush)
         
+        # Draw lines connecting corners
+        painter.drawLine(r.topLeft(), r.topRight())
+        painter.drawLine(r.topRight(), r.bottomRight())
+        painter.drawLine(r.bottomRight(), r.bottomLeft())
+        painter.drawLine(r.bottomLeft(), r.topLeft())
+        
         # Corners
         handles = [
             r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()
@@ -126,12 +132,6 @@ class RectItem(AnnotationItem):
             
         painter.restore()
 
-    def draw_selection_ui(self, painter):
-        # Draw dashed outline logic or handles
-        # Handles are drawn in global coords usually, or local?
-        # Let's draw in local (already transformed)
-        pass # Handle drawing logic deferred to Manager or simple implementation
-
 class EllipseItem(RectItem):
     def draw(self, painter):
         painter.save()
@@ -143,6 +143,9 @@ class EllipseItem(RectItem):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(self.rect)
         
+        if self.selected:
+            self.draw_selection_ui(painter)
+            
         painter.restore()
 
 class LineItem(AnnotationItem):
