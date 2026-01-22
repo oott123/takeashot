@@ -680,9 +680,6 @@ class ScreenshotApp(QObject):
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         sys.exit(self.app.exec())
 
-def main():
+if __name__ == "__main__":
     app = ScreenshotApp()
     app.run()
-
-if __name__ == "__main__":
-    main()
