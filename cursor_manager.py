@@ -17,14 +17,27 @@ class CursorManager:
             return
 
         annotation_manager = getattr(self.controller, 'annotation_manager', None)
-        if annotation_manager and annotation_manager.current_tool == 'pointer':
+        
+        # Check for edit tool - show annotation cursors when hovering over annotations
+        if annotation_manager and annotation_manager.current_tool == 'edit':
             selected_item = getattr(annotation_manager, 'selected_item', None)
             if selected_item and selected_item.selected:
                 handle = selected_item.get_handle_at(QPointF(global_pos))
                 if handle:
                     self._set_annotation_cursor(handle)
                     return
-
+            
+            # Check if mouse is over any annotation (for move cursor)
+            for item in reversed(annotation_manager.items):
+                if item.contains(QPointF(global_pos)):
+                    self.widget.setCursor(Qt.CursorShape.SizeAllCursor)
+                    return
+            
+            # No annotation under mouse - show normal arrow cursor
+            self.widget.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        
+        # For pointer tool and drawing tools, use selection-based cursors
         if not selection_rect.isNull():
             if selection_rect.contains(global_pos, proper=True):
                 if self._is_pointer_tool():

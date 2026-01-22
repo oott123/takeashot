@@ -17,6 +17,7 @@ Item {
 
     function selectTool(name) {
         if (name === "pointer") pointerBtn.checked = true
+        else if (name === "edit") editBtn.checked = true
         else if (name === "pencil") pencilBtn.checked = true
         else if (name === "line") lineBtn.checked = true
         else if (name === "rect") rectBtn.checked = true
@@ -41,7 +42,7 @@ Item {
             // Tool Group
             ButtonGroup {
                 id: toolGroup
-                buttons: [pointerBtn, pencilBtn, lineBtn, rectBtn, ellipseBtn]
+                buttons: [pointerBtn, editBtn, pencilBtn, lineBtn, rectBtn, ellipseBtn]
             }
 
             // --- Tools ---
@@ -69,6 +70,32 @@ Item {
                         capStyle: ShapePath.RoundCap
                         joinStyle: ShapePath.RoundJoin
                         PathSvg { path: "M7 7l10 10 M16 7l-9 0l0 9" }
+                    }
+                }
+            }
+
+            // Edit
+            Button {
+                id: editBtn
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                padding: 4
+                checkable: true
+                onToggled: if(checked) root.toolSelected("edit")
+                background: Rectangle {
+                    color: editBtn.hovered ? "#eee" : (editBtn.checked ? "#ddd" : "transparent")
+                    border.color: editBtn.checked ? "#aaa" : "transparent"
+                }
+                contentItem: Shape {
+                    anchors.centerIn: parent
+                    width: 24; height: 24
+                    ShapePath {
+                        strokeColor: "black"
+                        strokeWidth: 2
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        joinStyle: ShapePath.RoundJoin
+                        PathSvg { path: "M19 11v-2a2 2 0 0 0 -2 -2h-8a2 2 0 0 0 -2 2v8a2 2 0 0 0 2 2h2 M13 13l9 3l-4 2l-2 4l-3 -9" }
                     }
                 }
             }

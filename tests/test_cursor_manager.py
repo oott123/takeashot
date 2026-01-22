@@ -202,9 +202,9 @@ def test_annotation_selected_pointer_tool_on_rotate_handle(cursor_manager, mock_
     mock_widget.setCursor.assert_called_with(Qt.CursorShape.SizeAllCursor)
 
 
-def test_annotation_selected_pointer_tool_on_tl_handle(cursor_manager, mock_controller, mock_widget):
+def test_annotation_selected_edit_tool_on_tl_handle(cursor_manager, mock_controller, mock_widget):
     annotation_manager = MagicMock()
-    annotation_manager.current_tool = 'pointer'
+    annotation_manager.current_tool = 'edit'
     mock_controller.annotation_manager = annotation_manager
     selected_item = MagicMock()
     selected_item.selected = True
@@ -214,9 +214,9 @@ def test_annotation_selected_pointer_tool_on_tl_handle(cursor_manager, mock_cont
     mock_widget.setCursor.assert_called_with(Qt.CursorShape.SizeFDiagCursor)
 
 
-def test_annotation_selected_pointer_tool_on_br_handle(cursor_manager, mock_controller, mock_widget):
+def test_annotation_selected_edit_tool_on_br_handle(cursor_manager, mock_controller, mock_widget):
     annotation_manager = MagicMock()
-    annotation_manager.current_tool = 'pointer'
+    annotation_manager.current_tool = 'edit'
     mock_controller.annotation_manager = annotation_manager
     selected_item = MagicMock()
     selected_item.selected = True
@@ -226,9 +226,9 @@ def test_annotation_selected_pointer_tool_on_br_handle(cursor_manager, mock_cont
     mock_widget.setCursor.assert_called_with(Qt.CursorShape.SizeFDiagCursor)
 
 
-def test_annotation_selected_pointer_tool_on_tr_handle(cursor_manager, mock_controller, mock_widget):
+def test_annotation_selected_edit_tool_on_tr_handle(cursor_manager, mock_controller, mock_widget):
     annotation_manager = MagicMock()
-    annotation_manager.current_tool = 'pointer'
+    annotation_manager.current_tool = 'edit'
     mock_controller.annotation_manager = annotation_manager
     selected_item = MagicMock()
     selected_item.selected = True
@@ -238,9 +238,9 @@ def test_annotation_selected_pointer_tool_on_tr_handle(cursor_manager, mock_cont
     mock_widget.setCursor.assert_called_with(Qt.CursorShape.SizeBDiagCursor)
 
 
-def test_annotation_selected_pointer_tool_on_bl_handle(cursor_manager, mock_controller, mock_widget):
+def test_annotation_selected_edit_tool_on_bl_handle(cursor_manager, mock_controller, mock_widget):
     annotation_manager = MagicMock()
-    annotation_manager.current_tool = 'pointer'
+    annotation_manager.current_tool = 'edit'
     mock_controller.annotation_manager = annotation_manager
     selected_item = MagicMock()
     selected_item.selected = True
@@ -270,3 +270,71 @@ def test_annotation_selected_no_item(cursor_manager, mock_controller, mock_widge
     mock_controller.selection_rect = QRect()
     cursor_manager.update_cursor(QPoint(50, 50))
     mock_widget.setCursor.assert_called_with(Qt.CursorShape.CrossCursor)
+
+
+def test_edit_tool_no_annotation_under_mouse_sets_arrow_cursor(cursor_manager, mock_controller, mock_widget):
+    """Test: Edit tool with no annotation under mouse shows Arrow cursor"""
+    annotation_manager = MagicMock()
+    annotation_manager.current_tool = 'edit'
+    mock_controller.annotation_manager = annotation_manager
+    annotation_manager.selected_item = None
+    annotation_manager.items = []  # No annotations
+    mock_controller.selection_rect = QRect()  # No selection rect
+    cursor_manager.update_cursor(QPoint(50, 50))
+    mock_widget.setCursor.assert_called_with(Qt.CursorShape.ArrowCursor)
+
+
+def test_edit_tool_annotation_under_mouse_sets_size_all_cursor(cursor_manager, mock_controller, mock_widget):
+    """Test: Edit tool with annotation under mouse (but not selected) shows SizeAll cursor"""
+    annotation_manager = MagicMock()
+    annotation_manager.current_tool = 'edit'
+    mock_controller.annotation_manager = annotation_manager
+    annotation_manager.selected_item = None
+    
+    # Create a mock annotation under the mouse
+    mock_annotation = MagicMock()
+    mock_annotation.contains.return_value = True  # Mouse is over this annotation
+    annotation_manager.items = [mock_annotation]
+    
+    mock_controller.selection_rect = QRect()  # No selection rect
+    cursor_manager.update_cursor(QPoint(50, 50))
+    mock_widget.setCursor.assert_called_with(Qt.CursorShape.SizeAllCursor)
+
+
+def test_edit_tool_selected_annotation_hover_sets_size_all_cursor(cursor_manager, mock_controller, mock_widget):
+    """Test: Edit tool with selected annotation but no handle under mouse shows SizeAll cursor"""
+    annotation_manager = MagicMock()
+    annotation_manager.current_tool = 'edit'
+    mock_controller.annotation_manager = annotation_manager
+    
+    selected_item = MagicMock()
+    selected_item.selected = True
+    selected_item.get_handle_at.return_value = None  # No handle under mouse
+    annotation_manager.selected_item = selected_item
+    annotation_manager.items = [selected_item]
+    
+    mock_controller.selection_rect = QRect()  # No selection rect
+    cursor_manager.update_cursor(QPoint(50, 50))
+    mock_widget.setCursor.assert_called_with(Qt.CursorShape.SizeAllCursor)
+
+
+def test_pointer_tool_does_not_handle_annotations(cursor_manager, mock_controller, mock_widget):
+    """Test: Pointer tool does not show annotation cursors, shows selection cursors instead"""
+    annotation_manager = MagicMock()
+    annotation_manager.current_tool = 'pointer'
+    mock_controller.annotation_manager = annotation_manager
+    
+    # Simulate a selection rect exists
+    mock_controller.selection_rect = QRect(0, 0, 100, 100)
+    
+    # Even with a selected annotation, pointer tool should not handle it
+    selected_item = MagicMock()
+    selected_item.selected = True
+    selected_item.get_handle_at.return_value = 'tl'
+    annotation_manager.selected_item = selected_item
+    annotation_manager.items = [selected_item]
+    
+    # Mouse inside selection rect
+    cursor_manager.update_cursor(QPoint(50, 50))
+    # Should show SizeAllCursor for selection, not SizeFDiagCursor for annotation
+    mock_widget.setCursor.assert_called_with(Qt.CursorShape.SizeAllCursor)

@@ -6,7 +6,7 @@ from .items import RectItem, EllipseItem, LineItem, StrokeItem
 class AnnotationManager:
     def __init__(self):
         self.items = []
-        self.current_tool = 'pointer' # pointer, pencil, line, rect, ellipse
+        self.current_tool = 'pointer' # pointer, edit, pencil, line, rect, ellipse
         self.current_color = Qt.GlobalColor.red
         self.current_width = 3
         
@@ -23,8 +23,10 @@ class AnnotationManager:
         
     def set_tool(self, tool_name):
         self.current_tool = tool_name
-        self.selected_item = None # Deselect when changing tools (optional)
-        self.update_snippets() # Trigger repaint to clear selection UI
+        self.selected_item = None
+        for item in self.items:
+            item.selected = False
+        self.update_snippets()
 
     # Optional hook to update UI
     def update_snippets(self):
@@ -46,6 +48,11 @@ class AnnotationManager:
         self.drag_start_pos = pos
         
         if self.current_tool == 'pointer':
+            # Pointer tool: Don't select annotations, let caller handle selection
+            return False
+            
+        elif self.current_tool == 'edit':
+            # Edit tool: Select and manipulate annotations
             # 1. Check handles of selected item
             if self.selected_item:
                 handle = self.selected_item.get_handle_at(pos)
@@ -76,11 +83,11 @@ class AnnotationManager:
                         item.selected = False
                 return True
             else:
-                # Clicked empty space
+                # Clicked empty space - deselect all
                 self.selected_item = None
                 for item in self.items:
                     item.selected = False
-                return False 
+                return True
                 
         else:
             # Drawing a new shape
@@ -108,6 +115,10 @@ class AnnotationManager:
             else:
                 self.active_item.update_geometry(self.drag_start_pos, pos)
             return True
+            
+        if self.current_tool == 'pointer':
+            # Pointer tool doesn't handle annotation manipulation
+            return False
             
         if self.active_item:
             if self.is_moving:
