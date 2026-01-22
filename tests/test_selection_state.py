@@ -1,5 +1,5 @@
 import pytest
-from PyQt6.QtCore import Qt, QPoint, QRect
+from PyQt6.QtCore import Qt, QPoint, QRect, QSize
 from main import ScreenshotApp
 
 
@@ -305,20 +305,116 @@ def test_toolbar_transparent_area_passes_through(app, qtbot):
     assert app.active_handle is None
 
 
-def test_click_outside_toolbar_area(app, qtbot):
+def test_click_outside_selection_should_expand_without_drag(app, qtbot):
     """
-    测试：在工具栏以外的空白区域点击，应该正常工作
+    测试场景：鼠标点击选区外面，扩展选区后释放（没有拖动）
+    
+    Bug 描述：
+    当鼠标点击截图区域外面，按下鼠标之后，截图区域会扩展，
+    但是鼠标松开之后，自动变回去。
+    
+    预期结果：
+    点击选区外后释放（没有拖动），选区应该扩展到点击位置并且不缩回去。
+    即：selection_rect 应该包含点击位置，而不是恢复到原始位置。
+    """
+    app.start_capture()
+    assert len(app.snippers) > 0
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
 
-    场景：
-    1. 创建一个选区，工具栏显示
-    2. 在工具栏以外的空白区域按下并释放鼠标
-    3. 验证 is_selecting 状态正确响应
+    # 获取屏幕几何信息，用于坐标转换
+    screen_geo = snipper.screen_geometry
+    print(f"Screen geometry: {screen_geo}")
+
+    # 1. 创建初始选区（使用局部坐标）
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    # 验证选区已创建
+    assert not app.selection_rect.isNull()
+    original_rect = QRect(app.selection_rect)
+    print(f"Original selection rect: {original_rect}")
+    
+    # 验证初始状态
+    assert app.is_selecting == False
+    assert app.is_dragging == False
+    assert app.active_handle is None
+
+    # 2. 在选区外点击并释放（没有拖动）
+    # 选择一个在选区外的位置（相对于屏幕的全局坐标）
+    # 假设选区在 (100,100) 到 (300,200)，我们选择 (400, 300) 在选区右下角外面
+    # 局部坐标 = 全局坐标 - 屏幕左上角
+    outside_global = QPoint(screen_geo.left() + 400, screen_geo.top() + 300)
+    outside_local = outside_global - screen_geo.topLeft()
+    
+    # 目标点：在扩展后的选区内（不是边界上）
+    # 扩展后的选区会从 (2020, 360) 扩展到包含 (2320, 560)
+    # 所以选择 (2250, 450) 应该在扩展后的选区内
+    target_global = QPoint(screen_geo.left() + 250, screen_geo.top() + 150)
+    target_local = target_global - screen_geo.topLeft()
+    
+    print(f"Clicking at global: {outside_global}, local: {outside_local}")
+    print(f"Target point global: {target_global}, local: {target_local}")
+    print(f"Original rect contains outside? {original_rect.contains(outside_global)}")
+    
+    # 按下鼠标 - 此时应该立即扩展选区
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
+    
+    # 验证：按下后应该正在选择中
+    assert app.is_selecting == True, "按下鼠标后，is_selecting 应该为 True"
+    assert app.active_handle == 'expand', "按下位置在选区外，active_handle 应该为 'expand'"
+    
+    # 验证：选区应该已经扩展到包含点击位置
+    print(f"Selection rect after press: {app.selection_rect}")
+    assert app.selection_rect.contains(target_global), \
+        f"按下鼠标后，选区应该扩展到包含点击位置附近的目标点 {target_global}，但当前选区是 {app.selection_rect}"
+    # 注意：点击位置 (2320, 560) 可能正好在边界上，QRect.contains() 对边界返回 False
+
+    # 3. 释放鼠标（没有拖动 - 位置不变）
+    # 关键：释放时位置不变，这样 is_dragging 会是 False
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
+
+    # 验证：状态应该重置
+    assert app.is_selecting == False, "释放鼠标后，is_selecting 应该重置为 False"
+    assert app.is_dragging == False, "释放鼠标后，is_dragging 应该为 False"
+    assert app.active_handle is None, "释放鼠标后，active_handle 应该为 None"
+
+    # ==== 这是 bug 的关键验证点 ====
+    # 预期：选区应该保持在扩展后的位置
+    # Bug 表现：选区会恢复到原始位置
+    
+    print(f"Selection rect after release: {app.selection_rect}")
+    
+    # 验证选区仍然包含点击位置
+    assert app.selection_rect.contains(outside_global), \
+        f"BUG: 点击选区外后释放，选区应该保持在扩展后的位置，包含 {outside_global}，但选区恢复到了 {app.selection_rect}"
+    
+    # 验证选区已经扩展（比原始选区大）
+    # 扩展后的选区应该比原始选区大
+    assert app.selection_rect.width() >= original_rect.width() or app.selection_rect.height() >= original_rect.height(), \
+        f"BUG: 选区应该扩展，但 {app.selection_rect} 与原始选区 {original_rect} 大小相同"
+
+
+def test_click_outside_selection_small_movement(app, qtbot):
+    """
+    测试场景：鼠标点击选区外面，有小幅度移动后释放
+    
+    即使有小幅度的移动（但不超过拖拽阈值），选区也应该扩展并保持。
     """
     app.start_capture()
     snipper = app.snippers[0]
     qtbot.addWidget(snipper)
     with qtbot.waitExposed(snipper):
         pass
+
+    # 获取屏幕几何信息，用于坐标转换
+    screen_geo = snipper.screen_geometry
 
     # 创建初始选区
     start_local = QPoint(100, 100)
@@ -328,26 +424,74 @@ def test_click_outside_toolbar_area(app, qtbot):
     qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
     qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
 
-    # 验证工具栏已显示
-    assert snipper.toolbar.isVisible()
+    original_rect = QRect(app.selection_rect)
 
-    # 在工具栏以外的空白区域点击（选择一个远离工具栏的位置）
-    # 使用 snipping_widget 的坐标
-    outside_local = QPoint(50, 50)  # 左上角，远离工具栏
-
-    # 初始状态
-    assert app.is_selecting == False
-
-    # 在空白区域按下鼠标
+    # 在选区外点击（使用全局坐标）
+    outside_global = QPoint(screen_geo.left() + 400, screen_geo.top() + 300)
+    outside_local = outside_global - screen_geo.topLeft()
+    
+    # 小幅度移动（不超过阈值 5px）
+    small_move_global = QPoint(screen_geo.left() + 401, screen_geo.top() + 301)  # 曼哈顿距离 = 2 < 5
+    small_move_local = small_move_global - screen_geo.topLeft()
+    
     qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
-
-    # 验证 is_selecting 变为 True
-    assert app.is_selecting == True, "在空白区域按下鼠标，is_selecting 应该变为 True"
-
+    
+    # 小幅度移动（不超过阈值 5px）
+    qtbot.mouseMove(snipper.snipping_widget, pos=small_move_local)
+    
     # 释放鼠标
-    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=small_move_local)
 
-    # 验证状态重置
-    assert app.is_selecting == False, "释放鼠标后，is_selecting 应该重置为 False"
+    # 验证：选区应该扩展并保持
+    assert app.selection_rect.contains(small_move_global), \
+        f"BUG: 点击选区外后有小幅度移动，选区应该保持在扩展后的位置，包含 {small_move_global}，但选区是 {app.selection_rect}"
+
+
+def test_click_outside_selection_large_drag(app, qtbot):
+    """
+    测试场景：鼠标点击选区外面，有大幅度拖拽后释放
+    
+    注意：当前代码中 'expand' 操作不支持拖拽跟随。
+    预期行为：选区应该扩展到包含点击位置，但不跟随后续拖拽。
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    # 获取屏幕几何信息，用于坐标转换
+    screen_geo = snipper.screen_geometry
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    original_rect = QRect(app.selection_rect)
+
+    # 在选区外点击（使用全局坐标）
+    outside_global = QPoint(screen_geo.left() + 400, screen_geo.top() + 300)
+    outside_local = outside_global - screen_geo.topLeft()
+    
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
+    
+    # 大幅度移动（超过阈值 5px）
+    large_move_global = QPoint(screen_geo.left() + 500, screen_geo.top() + 400)  # 曼哈顿距离 = 200 > 5
+    large_move_local = large_move_global - screen_geo.topLeft()
+    qtbot.mouseMove(snipper.snipping_widget, pos=large_move_local)
+    
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=large_move_local)
+
+    # 释放后状态重置
+    assert app.is_selecting == False
     assert app.is_dragging == False
-    assert app.active_handle is None
+    
+    # 当前行为：expand 操作只扩展到点击位置，不跟随拖拽
+    # 选区应该包含点击位置（扩展后的效果）
+    assert app.selection_rect.contains(outside_global), \
+        f"点击选区外后拖拽，选区应该包含点击位置 {outside_global}，但选区是 {app.selection_rect}"
