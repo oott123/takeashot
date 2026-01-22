@@ -51,7 +51,11 @@ for (var i = list.length - 1; i >= 0; i--) {{
         }});
     }}
 }}
-callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}", JSON.stringify(res));
+try {{
+    callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}", JSON.stringify(res));
+}} catch (e) {{
+    print("Error calling DBus from KWin script: " + e);
+}}
 """
             
             # 写入临时文件
@@ -99,11 +103,11 @@ callDBus("{service_name}", "{object_path}", "{interface_name}", "{method_name}",
             else:
                 print("Failed to get script interface")
             
-            # 设置超时（2秒）
+            # 设置超时（5秒）
             self.timeout_timer = QTimer()
             self.timeout_timer.setSingleShot(True)
             self.timeout_timer.timeout.connect(self._on_timeout)
-            self.timeout_timer.start(2000)
+            self.timeout_timer.start(5000)
             
         except Exception as e:
             print(f"Failed to start window list retrieval: {e}")

@@ -1,12 +1,22 @@
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, pyqtClassInfo
 from PyQt6.QtDBus import QDBusConnection, QDBusAbstractAdaptor, QDBusMessage, QDBusInterface
 import json
 
+@pyqtClassInfo("D-Bus Interface", "com.takeashot.Service")
+@pyqtClassInfo("D-Bus Introspection", """
+  <interface name="com.takeashot.Service">
+    <method name="activate"/>
+    <method name="receive_window_data">
+      <arg direction="in" type="s" name="json_str"/>
+    </method>
+  </interface>
+""")
 class DbusAdaptor(QDBusAbstractAdaptor):
     """
     DBus Adaptor to handle incoming DBus calls.
     Proxies calls to the DbusManager via signals.
     """
+
     def __init__(self, parent):
         super().__init__(parent)
         self.manager = parent
