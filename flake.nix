@@ -43,7 +43,7 @@
            ];
 
            installPhase = ''
-             mkdir -p $out/bin $out/lib/takeashot
+             mkdir -p $out/bin $out/lib/takeashot $out/share/applications
              cp *.py $out/lib/takeashot/
              cp -r annotations $out/lib/takeashot/
              cp Toolbar.qml $out/lib/takeashot/
@@ -54,6 +54,16 @@
              exec python $out/lib/takeashot/main.py "\$@"
              EOF
              chmod +x $out/bin/takeashot
+
+             cat > $out/share/applications/takeashot.desktop <<EOF
+             [Desktop Entry]
+             Name=Take a Shot
+             Exec=$out/bin/takeashot
+             Icon=accessories-screenshot
+             Type=Application
+             Categories=Utility;
+             X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
+             EOF
            '';
 
            postFixup = ''
