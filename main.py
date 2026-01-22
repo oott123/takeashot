@@ -97,6 +97,7 @@ class ScreenshotApp(QObject):
         self.is_dragging = False
         self.click_start_pos = QPoint()
         self.MOUSE_DRAG_THRESHOLD = 5
+        self.final_pos = QPoint()  # Track final mouse position before release
         
         # Window snapping state
         self.windows = []  # List of window dictionaries from KWin
@@ -369,6 +370,7 @@ class ScreenshotApp(QObject):
                 self.active_handle = 'move'
             else:
                 # Clicked outside selection - expand selection to include the point
+                self.active_handle = 'expand'
                 self.expand_selection_to_point(global_pos)
         else:
             # No selection state
@@ -382,6 +384,9 @@ class ScreenshotApp(QObject):
         if self.annotation_manager.handle_mouse_move(global_pos):
             self.update_snippets()
             return
+
+        # Track final position for release event
+        self.final_pos = global_pos
 
         if not self.is_selecting:
             # Window snapping: if no real selection and snapping enabled, check if mouse is over a window
@@ -407,6 +412,7 @@ class ScreenshotApp(QObject):
         # Check if movement exceeds threshold (becomes a drag)
         if not self.is_dragging and distance > self.MOUSE_DRAG_THRESHOLD:
             self.is_dragging = True
+            # Don't update drag_start_pos - keep it as the initial press position
             # Clear pending selection when starting a real drag
             if self.pending_window:
                 self.pending_window = None
@@ -447,18 +453,19 @@ class ScreenshotApp(QObject):
         if self.annotation_manager.handle_mouse_release(None):
             self.update_snippets()
             return
-            
-        # Determine if this was a click or a drag
-        distance = (self.drag_start_pos - self.click_start_pos).manhattanLength()
-        was_drag = distance > self.MOUSE_DRAG_THRESHOLD
-        
-        if not was_drag:
+
+        # Use is_dragging flag to determine if this was a drag operation
+        # The is_dragging flag is set to True only when movement exceeds threshold
+        if not self.is_dragging:
             # This was a CLICK - execute click-based actions based on state
             if self.active_handle == 'confirm_pending':
                 # Pending selection state: clicked inside pending - confirm it
                 self.selection_rect = QRect(self.pending_selection_rect)
                 self.pending_selection_rect = QRect()
                 self.pending_window = None
+            elif self.active_handle == 'expand':
+                # Expand operation but no drag - restore original selection
+                self.selection_rect = QRect(self.rect_start_geometry)
             elif self.active_handle == 'move':
                 # Has selection state: clicked inside selection - no action
                 pass
@@ -466,12 +473,13 @@ class ScreenshotApp(QObject):
         else:
             # This was a DRAG - finalize the drag operation
             self.selection_rect = self.selection_rect.normalized()
-        
+
         # Reset selection state
         self.is_selecting = False
         self.is_dragging = False
         self.active_handle = None
-        
+        self.final_pos = QPoint()  # Clear final position
+
         self.update_snippets()
 
     def update_snippets(self):
