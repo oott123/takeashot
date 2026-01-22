@@ -1,66 +1,60 @@
 # 设计文档
 
-## 项目用途
+此文档旨在帮助 AI agent 快速理解本项目架构与逻辑。
 
-这是一个专为 KDE Wayland 环境设计的截图工具。它使用 PyQt5 构建，支持多屏幕截图、区域选择以及智能窗口吸附功能。工具通过 D-Bus 与 KWin 交互获取屏幕截图和窗口信息。
+## 1. 项目用途
+这是一个专为 KDE Wayland 环境设计的截图工具。它的主要功能包括：
+- 多屏幕截图支持
+- 区域选择与调整
+- 窗口吸附（智能识别并选中窗口）
+- 简单的标注功能（如画笔、箭头等）
+- 剪贴板集成
 
-## 选区状态
+## 2. 选区状态定义
 
-### 1. 拟选择状态 (Pending Selection)
-- **定义**: 用户鼠标悬停在某个窗口上，但尚未点击确认时的预览状态。
-- **状态变量**: `pending_selection_rect` 有值 (非空)，`selection_rect` 为空。
-- **表现**: 显示对应窗口的蓝色边框，但**不显示**调整手柄 (Resize Handles) 和工具栏。
-- **操作**: 点击鼠标左键将确认该区域为正式选区。
+在 `ScreenshotApp` (main.py) 中，系统维护着几种互斥的选区状态：
 
-### 2. 有选区状态 (Has Selection)
-- **定义**: 用户已确认了一个具体的截图区域（通过拖拽创建或点击“拟选择”区域确认）。
-- **状态变量**: `selection_rect` 有值 (非空)。
-- **表现**: 显示选区的蓝色边框，显示 8 个调整手柄，并在选区附近显示工具栏 (Toolbar)。选区以外区域显示半透明遮罩。
-- **操作**: 可以拖拽手柄调整大小，拖拽选区移动位置，按 Enter 或点击工具栏按钮完成截图。
+- **无选区 (No Selection)**
+  - `selection_rect` 为空且 `pending_selection_rect` 为空。
+  - 用户未进行任何操作，界面显示全屏遮罩。
+  - 亦即初始状态。
 
-### 3. 无选区状态 (No Selection)
-- **定义**: 初始状态或取消选区后的状态，没有任何区域被选中或预览。
-- **状态变量**: `selection_rect` 和 `pending_selection_rect` 均为空。
-- **表现**: 全屏显示半透明遮罩，鼠标光标为十字准星。
-- **操作**: 鼠标拖拽可创建新选区，移动鼠标可寻找窗口触发“拟选择状态”。
+- **拟选择 (Pending Selection)**
+  - `pending_selection_rect` 有值，但 `selection_rect` 为空。
+  - **触发条件**：启用了窗口吸附 (`snapping_enabled`=True)，且鼠标悬停在某个窗口区域上。
+  - **表现**：显示蓝色边框预览，但**不显示**调整手柄（Resize Handles）。
+  - **行为**：单击即可确认该区域为正式选区。
 
-## 支持环境
+- **有选区 (Has Selection)**
+  - `selection_rect` 有值。
+  - **触发条件**：用户通过拖拽创建了选区，或确认了拟选择区域。
+  - **表现**：显示选区高亮、遮罩挖空，并显示调整手柄。
+  - **行为**：可以调整大小、移动位置、进行标注或确认截图。
 
-- **OS**: Linux
-- **Desktop Environment**: KDE Plasma (Wayland Session)
-- **Dependencies**: 依赖 KWin 的 D-Bus 接口 (`org.kde.KWin.ScreenShot2`, 脚本接口) 获取截图和窗口列表。
+## 3. 支持环境
+- **操作系统**: Linux
+- **桌面环境**: KDE Plasma (Wayland Session)
+- **依赖说明**: 强依赖 KWin 的 DBus 接口与其 Scripting API 获取窗口信息，因此**仅支持 KDE Wayland**。
 
-## 相关代码位置
+## 4. 关键代码位置
 
-### `main.py`
-- **`ScreenshotApp` 类**: 核心控制器，管理全局状态和逻辑。
-    - **状态管理**: 维护 `selection_rect` (实选区), `pending_selection_rect` (拟选区), `windows` (窗口列表)。
-    - **逻辑处理**: `on_mouse_press`, `on_mouse_move`, `capture_selection` (截图合成与剪贴板操作), `_start_window_snapping` (启动窗口列表获取)。
-    - **交互**: 处理从 SnippingWidget 转发过来的鼠标事件，决定状态流转。将绘图事件委托给 `AnnotationManager`。
+| 功能模块 | 类名/函数名 | 文件位置 |
+| :--- | :--- | :--- |
+| **程序入口与核心控制** | `ScreenshotApp` | `main.py` |
+| **截图窗口 UI** | `SnippingWindow`, `SnippingWidget` | `snipping_widget.py` |
+| **标注管理** | `AnnotationManager` | `annotations/manager.py` |
+| **窗口列表获取 (KWin)** | `WindowLister` | `window_lister.py` |
+| **光标状态管理** | `CursorManager` | `cursor_manager.py` |
+| **DBus 管理 (单例/通信)** | `DbusManager` | `dbus_manager.py` |
+| **底层截图实现** | `ScreenshotBackend` | `screenshot_backend.py` |
+| **全局输入监听** | `GlobalInputMonitor` | `input_monitor.py` |
 
-### `snipping_widget.py`
-- **`SnippingWindow` 类**: 每个屏幕一个的顶层全屏窗口。
-    - **职责**: 作为容器，包含 `SnippingWidget` 和 `Toolbar`。管理工具栏的显示和定位 (`update_toolbar_position`)，处理窗口级别的按键 (Esc, Enter)。
-- **`SnippingWidget` 类**: 填充窗口的主要绘图组件。
-    - **职责**: 负责绘制 (`paintEvent`)，包括背景图、半透明遮罩、选区边框、拟选区边框、手柄以及**标注层**。
-    - **事件**: 捕获鼠标事件 (`mousePressEvent` 等) 并**转发**给 `ScreenshotApp` 控制器处理。
+## 5. 鼠标光标管理
+光标状态由 `CursorManager` 统一管理。
 
-### `Toolbar.qml`
-- **`Toolbar` 组件**: 使用 QML 实现的悬浮工具栏。
-    - **职责**: 负责 UI 渲染 (使用 Canvas 绘制图标) 和交互事件。包含透明顶部内边距 (`topPadding`) 以支持 Tooltip 显示。
-    - **交互**: 发送信号 (`cancelRequested`, `saveRequested`, `confirmRequested`, `toolSelected`) 供外部连接。支持绘图工具切换（指针、铅笔、直线、矩形、椭圆）。
-
-### `annotations/`
-- **`AnnotationManager` 类**: 管理所有标注项的集合和当前选中的工具。
-    - **职责**: 处理标注相关的鼠标事件（点击选中、拖拽绘制、移动、缩放、旋转），维护当前激活的标注项 (`active_item`) 和选中项 (`selected_item`)。
-- **`AnnotationItem` 及子类**: 
-    - `RectItem`, `EllipseItem`, `LineItem`, `StrokeItem` (铅笔)。
-    - **职责**: 负责自身的绘制 (`draw`)、命中测试 (`contains`)、几何变换（移动、缩放、旋转）和选区 UI 绘制。
-
-### `window_lister.py`
-- **`WindowLister` 类**: 负责通过 KWin 脚本接口获取当前打开的窗口列表（位置和大小）。
-    - **职责**: 异步执行 KWin 脚本，通过 D-Bus 信号接收窗口数据，用于吸附功能。
-
-### `screenshot_backend.py`
-- **`ScreenshotBackend` 类**: 负责底层的屏幕抓取。
-    - **职责**: 封装 `org.kde.KWin.ScreenShot2` 接口调用，提供 `capture_screen` (单屏) 和 `capture_workspace` (全屏) 方法。
+- **调用**：`SnippingWidget` 在 `mouseMoveEvent` 中调用 `cursor_manager.update_cursor(global_pos)`。
+- **逻辑**：
+  - 判断鼠标是否在选区的调整手柄上 -> 显示对应的调整光标 (如 `SizeFDiagCursor`)。
+  - 判断鼠标是否在选区内 -> 显示移动光标 (`SizeAllCursor`)。
+  - 判断是否在拟选择区域内 -> 显示手型光标 (`PointingHandCursor`)。
+  - 其他情况 -> 显示十字准星 (`CrossCursor`) 或标注工具光标。
