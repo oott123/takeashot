@@ -24,35 +24,71 @@
           pytest-qt
         ]);
       in
-      {
-        devShells.default = with pkgs; mkShell {
-          nativeBuildInputs = [
-          ];
+       {
+         packages.default = with pkgs; stdenv.mkDerivation {
+           name = "takeashot";
+           src = ./.;
 
-          packages = [
-            pythonEnv
+           nativeBuildInputs = [
+             makeWrapper
+             qt6.wrapQtAppsHook
+           ];
 
-            qt6.qtbase
-            qt6.qtwayland
-            qt6.qtdeclarative
-            qt6.qtquick3d # Maybe needed for some qml? sticking to basics first
-            # qt6.qtquickcontrols2 # Often included in qtdeclarative or qtbase in newer nix versions, but checking...
-            # In qt6, qtquickcontrols2 is usually part of qtdeclarative
-          ];
-          
-          shellHook = ''
-            # a workaround for setting QML and Qt Plugins path correctly
-            setQtEnvironment=$(mktemp --suffix .setQtEnvironment)
-            makeWrapper "/bin/sh" "$setQtEnvironment" "''${qtWrapperArgs[@]}"
-            export QT_PLUGIN_PATH="$("$setQtEnvironment" -c 'printenv QT_PLUGIN_PATH')"
-            export QML2_IMPORT_PATH="$("$setQtEnvironment" -c 'printenv NIXPKGS_QT5_QML_IMPORT_PATH')"
-            # end of the workaround, don't touch unless you want to debug for hours
+           buildInputs = [
+             pythonEnv
+             qt6.qtbase
+             qt6.qtwayland
+             qt6.qtdeclarative
+             qt6.qtquick3d
+           ];
 
-            export PYTHONPATH=${pythonEnv}/${pythonEnv.sitePackages}
-            python -V
-            echo "nix devshell rebuild success! You can use new dependencies now."
-          '';
-        };
-      }
+           installPhase = ''
+             mkdir -p $out/bin $out/lib/takeashot
+             cp *.py $out/lib/takeashot/
+             cp -r annotations $out/lib/takeashot/
+             cp Toolbar.qml $out/lib/takeashot/
+
+             cat > $out/bin/takeashot <<EOF
+             #!/bin/sh
+             export PYTHONPATH=$out/lib/takeashot:\$PYTHONPATH
+             exec python $out/lib/takeashot/main.py "\$@"
+             EOF
+             chmod +x $out/bin/takeashot
+           '';
+
+           postFixup = ''
+             wrapQtApp $out/bin/takeashot
+           '';
+         };
+
+         devShells.default = with pkgs; mkShell {
+           nativeBuildInputs = [
+           ];
+
+           packages = [
+             pythonEnv
+
+             qt6.qtbase
+             qt6.qtwayland
+             qt6.qtdeclarative
+             qt6.qtquick3d # Maybe needed for some qml? sticking to basics first
+             # qt6.qtquickcontrols2 # Often included in qtdeclarative or qtbase in newer nix versions, but checking...
+             # In qt6, qtquickcontrols2 is usually part of qtdeclarative
+           ];
+
+           shellHook = ''
+             # a workaround for setting QML and Qt Plugins path correctly
+             setQtEnvironment=$(mktemp --suffix .setQtEnvironment)
+             makeWrapper "/bin/sh" "$setQtEnvironment" "''${qtWrapperArgs[@]}"
+             export QT_PLUGIN_PATH="$("$setQtEnvironment" -c 'printenv QT_PLUGIN_PATH')"
+             export QML2_IMPORT_PATH="$("$setQtEnvironment" -c 'printenv NIXPKGS_QT5_QML_IMPORT_PATH')"
+             # end of the workaround, don't touch unless you want to debug for hours
+
+             export PYTHONPATH=${pythonEnv}/${pythonEnv.sitePackages}
+             python -V
+             echo "nix devshell rebuild success! You can use new dependencies now."
+           '';
+         };
+       }
     );
 }
