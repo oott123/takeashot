@@ -239,3 +239,115 @@ def test_expand_selection_restores_on_no_drag(app, qtbot):
     assert app.is_selecting == False
     assert app.is_dragging == False
     assert app.active_handle is None
+
+
+def test_toolbar_transparent_area_passes_through(app, qtbot):
+    """
+    测试：工具栏上方的透明区域（topPadding）应该允许鼠标事件穿透到下层的 snipping_widget
+
+    场景：
+    1. 创建一个选区，工具栏显示
+    2. 点击工具栏上方的 topPadding 透明区域
+    3. 鼠标事件应该传递到下层的 snipping_widget
+    4. is_selecting 状态应该正确响应
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    # 验证工具栏已显示
+    assert snipper.toolbar.isVisible()
+
+    # 获取工具栏位置
+    toolbar_pos = snipper.toolbar.pos()
+
+    # 获取 top padding 值（从 QML）
+    top_padding = 40  # 默认值
+    root_obj = snipper.toolbar.rootObject()
+    if root_obj:
+        padding_val = root_obj.property("topPadding")
+        if padding_val is not None:
+            top_padding = int(padding_val)
+
+    # 在工具栏上方的透明区域点击（相对于工具栏的坐标）
+    # toolbar y + top_padding - 10 像素（在透明区域内）
+    click_y = toolbar_pos.y() + top_padding - 10
+    click_x = toolbar_pos.x() + 10
+
+    # 将局部坐标转换为窗口坐标
+    click_pos_local = QPoint(click_x, click_y)
+
+    # 初始状态
+    assert app.is_selecting == False
+
+    # 在透明区域按下鼠标
+    qtbot.mousePress(snipper, Qt.MouseButton.LeftButton, pos=click_pos_local)
+
+    # 验证鼠标事件穿透到了 snipping_widget，is_selecting 应该变为 True
+    assert app.is_selecting == True, "工具栏透明区域的鼠标按下事件应该穿透到 snipping_widget"
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper, Qt.MouseButton.LeftButton, pos=click_pos_local)
+
+    # 验证状态重置
+    assert app.is_selecting == False, "释放鼠标后，is_selecting 应该重置为 False"
+    assert app.is_dragging == False
+    assert app.active_handle is None
+
+
+def test_click_outside_toolbar_area(app, qtbot):
+    """
+    测试：在工具栏以外的空白区域点击，应该正常工作
+
+    场景：
+    1. 创建一个选区，工具栏显示
+    2. 在工具栏以外的空白区域按下并释放鼠标
+    3. 验证 is_selecting 状态正确响应
+    """
+    app.start_capture()
+    snipper = app.snippers[0]
+    qtbot.addWidget(snipper)
+    with qtbot.waitExposed(snipper):
+        pass
+
+    # 创建初始选区
+    start_local = QPoint(100, 100)
+    end_local = QPoint(300, 200)
+
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=start_local)
+    qtbot.mouseMove(snipper.snipping_widget, pos=end_local)
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=end_local)
+
+    # 验证工具栏已显示
+    assert snipper.toolbar.isVisible()
+
+    # 在工具栏以外的空白区域点击（选择一个远离工具栏的位置）
+    # 使用 snipping_widget 的坐标
+    outside_local = QPoint(50, 50)  # 左上角，远离工具栏
+
+    # 初始状态
+    assert app.is_selecting == False
+
+    # 在空白区域按下鼠标
+    qtbot.mousePress(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
+
+    # 验证 is_selecting 变为 True
+    assert app.is_selecting == True, "在空白区域按下鼠标，is_selecting 应该变为 True"
+
+    # 释放鼠标
+    qtbot.mouseRelease(snipper.snipping_widget, Qt.MouseButton.LeftButton, pos=outside_local)
+
+    # 验证状态重置
+    assert app.is_selecting == False, "释放鼠标后，is_selecting 应该重置为 False"
+    assert app.is_dragging == False
+    assert app.active_handle is None

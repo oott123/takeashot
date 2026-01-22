@@ -9,7 +9,7 @@ Item {
     width: toolbarRect.width
     // Height includes the visual toolbar + top padding for tooltips
     height: toolbarRect.height + topPadding
-    
+
     // Transparent padding at the top for tooltips
     property int topPadding: 40
 
@@ -24,6 +24,34 @@ Item {
         else if (name === "line") lineBtn.checked = true
         else if (name === "rect") rectBtn.checked = true
         else if (name === "ellipse") ellipseBtn.checked = true
+    }
+
+    // Transparent top padding area that allows mouse events to pass through
+    Rectangle {
+        id: topPaddingArea
+        anchors.top: parent.top
+        anchors.left: parent.left
+        width: parent.width
+        height: topPadding
+        color: "transparent"
+
+        // Mouse area that explicitly ignores events to allow pass-through
+        MouseArea {
+            anchors.fill: parent
+            propagateComposedEvents: true
+            onPressed: {
+                mouse.accepted = false
+            }
+            onReleased: {
+                mouse.accepted = false
+            }
+            onClicked: {
+                mouse.accepted = false
+            }
+            onDoubleClicked: {
+                mouse.accepted = false
+            }
+        }
     }
 
     // The actual visible toolbar

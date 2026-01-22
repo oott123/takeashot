@@ -205,11 +205,15 @@ class SnippingWindow(QWidget):
         if self.toolbar.status() == QQuickWidget.Status.Error:
              for error in self.toolbar.errors():
                  print("QML Error:", error.toString())
-        
+
         self.toolbar.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self.toolbar.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop)
+        self.toolbar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.toolbar.setClearColor(Qt.GlobalColor.transparent)
         self.toolbar.hide() # Hidden by default
+
+        # Store top_padding for mouse event handling
+        self._top_padding = 0
         
         # Connect QML Signals
         root = self.toolbar.rootObject()
@@ -287,14 +291,17 @@ class SnippingWindow(QWidget):
 
              w = root_obj.width()
              h = root_obj.height()
-             
+
              # Get top padding from QML (default to 0 if not property)
              top_padding = root_obj.property("topPadding")
              if top_padding is None:
                  top_padding = 0
              else:
                  top_padding = int(top_padding)
-             
+
+             # Store for mouse event handling (transparent area)
+             self._top_padding = top_padding
+
              # Adjust QQuickWidget size to match root object
              self.toolbar.resize(int(w), int(h))
              
@@ -351,16 +358,61 @@ class SnippingWindow(QWidget):
         self.closed.emit()
         super().closeEvent(event)
 
+    def _is_in_toolbar_transparent_area(self, pos):
+        """
+        Check if position is in the toolbar's top padding transparent area.
+        """
+        if not self.toolbar.isVisible():
+            return False
+
+        toolbar_pos = self.toolbar.pos()
+
+        # Check if mouse is over toolbar
+        if not QRect(toolbar_pos, self.toolbar.size()).contains(pos):
+            return False
+
+        # Check if mouse is in the top padding area (above the visible toolbar)
+        if pos.y() - toolbar_pos.y() < self._top_padding:
+            return True
+
+        return False
+
     def mousePressEvent(self, event):
-        # Forward to snipping_widget if it didn't handle it directly
-        # (This happens when Toolbar ignores the event)
+        # If click is in toolbar's transparent area, directly call controller
+        if self._is_in_toolbar_transparent_area(event.pos()):
+            global_pos = self.mapToGlobal(event.pos())
+            self.controller.on_mouse_press(global_pos)
+            event.accept()
+            return
+
+        # Otherwise, forward to snipping_widget
         self.snipping_widget.mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # If release is in toolbar's transparent area, directly call controller
+        if self._is_in_toolbar_transparent_area(event.pos()):
+            self.controller.on_mouse_release()
+            event.accept()
+            return
+
         self.snipping_widget.mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
+        # If double click is in toolbar's transparent area, directly call controller
+        if self._is_in_toolbar_transparent_area(event.pos()):
+            global_pos = self.mapToGlobal(event.pos())
+            self.controller.on_mouse_press(global_pos)
+            event.accept()
+            return
+
         self.snipping_widget.mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event):
+        # If mouse move is in toolbar's transparent area, directly call controller
+        if self._is_in_toolbar_transparent_area(event.pos()):
+            global_pos = self.mapToGlobal(event.pos())
+            self.controller.on_mouse_move(global_pos)
+            event.accept()
+            return
+
         self.snipping_widget.mouseMoveEvent(event)
