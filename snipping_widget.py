@@ -141,33 +141,84 @@ class SnippingWidget(QWidget):
     def mouseMoveEvent(self, event):
         global_pos = event.globalPosition().toPoint()
         
-        # 首先检查是否在手柄上（在任何状态下都优先显示手柄光标）
-        handle = self.controller.get_handle_at(global_pos)
-        if handle:
-            if handle in ['tl', 'br']: self.setCursor(Qt.CursorShape.SizeFDiagCursor)
-            elif handle in ['tr', 'bl']: self.setCursor(Qt.CursorShape.SizeBDiagCursor)
-            elif handle in ['t', 'b']: self.setCursor(Qt.CursorShape.SizeVerCursor)
-            elif handle in ['l', 'r']: self.setCursor(Qt.CursorShape.SizeHorCursor)
-            elif handle == 'move': self.setCursor(Qt.CursorShape.SizeAllCursor)
-        elif not self.controller.is_selecting:
-            # 未按下时，根据位置设置光标
-            if self.controller.selection_rect.isNull():
-                self.setCursor(Qt.CursorShape.CrossCursor)
-            elif self.controller.selection_rect.contains(global_pos):
-                # 在选区内但不在手柄上
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
-            else:
-                # 在选区外面
-                self._update_cursor_for_outside(global_pos)
+        # 如果正在扩展操作，跳过 handle 检查，使用扩展方向的光标
+        active_handle = self.controller.active_handle if self.controller.is_selecting else None
+        is_expanding = active_handle and active_handle.startswith('expand_')
+        
+        if is_expanding:
+            # 正在扩展时，根据鼠标相对于点击位置的方向设置光标
+            self._update_cursor_during_expand(global_pos)
         else:
-            # 正在选择中（按下鼠标），根据 active_handle 设置光标
-            active_handle = self.controller.active_handle
-            if active_handle and active_handle.startswith('expand_'):
-                # 扩展选区时，显示对应方向的光标
-                self._update_cursor_for_outside(global_pos)
+            # 首先检查是否在手柄上（在任何状态下都优先显示手柄光标）
+            handle = self.controller.get_handle_at(global_pos)
+            if handle:
+                if handle in ['tl', 'br']: self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+                elif handle in ['tr', 'bl']: self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+                elif handle in ['t', 'b']: self.setCursor(Qt.CursorShape.SizeVerCursor)
+                elif handle in ['l', 'r']: self.setCursor(Qt.CursorShape.SizeHorCursor)
+                elif handle == 'move': self.setCursor(Qt.CursorShape.SizeAllCursor)
+            elif not self.controller.is_selecting:
+                # 未按下时，根据位置设置光标
+                if self.controller.selection_rect.isNull():
+                    self.setCursor(Qt.CursorShape.CrossCursor)
+                elif self.controller.selection_rect.contains(global_pos):
+                    # 在选区内但不在手柄上
+                    self.setCursor(Qt.CursorShape.SizeAllCursor)
+                else:
+                    # 在选区外面
+                    self._update_cursor_for_outside(global_pos)
             elif active_handle == 'move':
                 self.setCursor(Qt.CursorShape.SizeAllCursor)
             elif active_handle == 'new':
+                self.setCursor(Qt.CursorShape.CrossCursor)
+        
+        self.controller.on_mouse_move(global_pos)
+        
+        # Tell window to maybe update toolbar
+        self.window().update_toolbar_position()
+    
+    def _update_cursor_during_expand(self, global_pos):
+        """
+        当正在扩展选区时，根据鼠标相对于点击位置的方向设置光标
+        这个方法不依赖于鼠标是否在选区内
+        """
+        click_start_pos = self.controller.click_start_pos
+        if click_start_pos.isNull():
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            return
+        
+        # 判断鼠标相对于点击位置的方向
+        dx = global_pos.x() - click_start_pos.x()
+        dy = global_pos.y() - click_start_pos.y()
+        
+        is_left = dx < 0
+        is_right = dx > 0
+        is_top = dy < 0
+        is_bottom = dy > 0
+        
+        # 八方向判断
+        if is_left and is_top:
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif is_right and is_top:
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif is_left and is_bottom:
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif is_right and is_bottom:
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif is_left:
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        elif is_right:
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        elif is_top:
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        elif is_bottom:
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        else:
+            # 鼠标没有移动
+            expand_sides = self.controller.active_handle[7:] if self.controller.active_handle else ''
+            if expand_sides:
+                self._update_cursor_for_outside(global_pos)
+            else:
                 self.setCursor(Qt.CursorShape.CrossCursor)
         
         self.controller.on_mouse_move(global_pos)
