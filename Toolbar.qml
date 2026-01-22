@@ -7,11 +7,8 @@ Item {
     id: root
     // Width matches the visual toolbar
     width: toolbarRect.width
-    // Height includes the visual toolbar + top padding for tooltips
-    height: toolbarRect.height + topPadding
-
-    // Transparent padding at the top for tooltips
-    property int topPadding: 40
+    // Height includes the visual toolbar
+    height: toolbarRect.height
 
     signal cancelRequested()
     signal saveRequested()
@@ -26,38 +23,10 @@ Item {
         else if (name === "ellipse") ellipseBtn.checked = true
     }
 
-    // Transparent top padding area that allows mouse events to pass through
-    Rectangle {
-        id: topPaddingArea
-        anchors.top: parent.top
-        anchors.left: parent.left
-        width: parent.width
-        height: topPadding
-        color: "transparent"
-
-        // Mouse area that explicitly ignores events to allow pass-through
-        MouseArea {
-            anchors.fill: parent
-            propagateComposedEvents: true
-            onPressed: {
-                mouse.accepted = false
-            }
-            onReleased: {
-                mouse.accepted = false
-            }
-            onClicked: {
-                mouse.accepted = false
-            }
-            onDoubleClicked: {
-                mouse.accepted = false
-            }
-        }
-    }
-
     // The actual visible toolbar
     Rectangle {
         id: toolbarRect
-        anchors.bottom: parent.bottom
+        anchors.top: parent.top
         width: row.implicitWidth + 2 // +2 for borders
         height: row.implicitHeight + 2 // +2 for borders
         color: "white"
@@ -102,8 +71,6 @@ Item {
                         PathSvg { path: "M7 7l10 10 M16 7l-9 0l0 9" }
                     }
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: "Select / Edit"
             }
 
             // Pencil
@@ -130,8 +97,6 @@ Item {
                         PathSvg { path: "M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4 M13.5 6.5l4 4" }
                     }
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: "Pencil"
             }
 
             // Line
@@ -158,8 +123,6 @@ Item {
                         PathSvg { path: "M17 5l-10 14" }
                     }
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: "Line"
             }
 
             // Rectangle
@@ -186,8 +149,6 @@ Item {
                         PathSvg { path: "M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" }
                     }
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: "Rectangle"
             }
 
             // Ellipse
@@ -214,8 +175,6 @@ Item {
                         PathSvg { path: "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" }
                     }
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: "Ellipse"
             }
 
             // Separator
@@ -249,10 +208,6 @@ Item {
                     }
                 }
                 onClicked: root.cancelRequested()
-                
-                ToolTip.visible: hovered
-                ToolTip.text: "Close"
-                ToolTip.delay: 500
             }
 
             // 2. Save Button (Floppy)
@@ -277,10 +232,6 @@ Item {
                     }
                 }
                 onClicked: root.saveRequested()
-                
-                ToolTip.visible: hovered
-                ToolTip.text: "Save"
-                ToolTip.delay: 500
             }
 
             // 3. Confirm Button (Checkmark)
@@ -305,10 +256,6 @@ Item {
                     }
                 }
                 onClicked: root.confirmRequested()
-                
-                ToolTip.visible: hovered
-                ToolTip.text: "Copy"
-                ToolTip.delay: 500
             }
         }
     }
