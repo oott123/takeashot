@@ -51,7 +51,7 @@
              cat > $out/bin/takeashot <<EOF
              #!/bin/sh
              export PYTHONPATH=$out/lib/takeashot:\$PYTHONPATH
-             exec python $out/lib/takeashot/main.py "\$@"
+             exec ${pythonEnv}/bin/python $out/lib/takeashot/main.py "\$@"
              EOF
              chmod +x $out/bin/takeashot
 
@@ -61,7 +61,17 @@
              Exec=$out/bin/takeashot
              Icon=accessories-screenshot
              Type=Application
-             Categories=Utility;
+             Categories=Utility
+             EOF
+
+             cat > $out/share/applications/takeashot-service.desktop <<EOF
+             [Desktop Entry]
+             Name=Take a Shot Python (required for KDE permissions)
+             Exec=${pythonEnv}/bin/python
+             Icon=accessories-screenshot
+             Type=Application
+             Categories=Utility
+             Hidden=true
              X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
              EOF
            '';
