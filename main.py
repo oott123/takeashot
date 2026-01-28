@@ -725,11 +725,6 @@ class ScreenshotApp(QObject):
         self.snippers = []
         
         for snipper in current_snippers:
-            # MEMORY LEAK FIX: Explicit cleanup before closing
-            if hasattr(snipper, 'full_pixmap'):
-                del snipper.full_pixmap
-            if hasattr(snipper, 'snipping_widget') and hasattr(snipper.snipping_widget, 'full_pixmap'):
-                del snipper.snipping_widget.full_pixmap
             snipper.close()
         
         # Force garbage collection to cleanup any remaining large objects
