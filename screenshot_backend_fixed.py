@@ -81,22 +81,19 @@ class ScreenshotBackend:
                         # MEMORY LEAK FIX: Direct QImage creation from raw data
                         # instead of creating intermediate PIL Image and converting
                         try:
-                            # Create QImage from BGRA data using ARGB32 format (which matches BGRA byte order)
-                            qimage = QImage(data, width, height, stride, QImage.Format.Format_ARGB32)
+                            # Create QImage directly from BGRA data
+                            qimage = QImage(data, width, height, stride, QImage.Format.Format_BGRA8888)
                             
                             if qimage.isNull():
                                 self.logger.error("Failed to create QImage from BGRA data")
                                 return None
-                            
-                            # Convert BGRA to RGBA by swapping color channels
-                            #qimage = qimage.rgbSwapped()
                             
                             # Convert to QPixmap
                             pixmap = QPixmap.fromImage(qimage)
                             
                             # Explicit cleanup of large objects
                             del data  # Free the large raw data immediately
-                            del qimage  # Free QImage after conversion
+                            del qimage  # Free the QImage after conversion
                             
                         except Exception as e:
                             # Fallback to PIL method if direct conversion fails

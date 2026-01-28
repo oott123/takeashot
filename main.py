@@ -258,6 +258,9 @@ class ScreenshotApp(QObject):
             screen_pixmap.setDevicePixelRatio(dpr)
             screen_pixmaps[screen] = screen_pixmap
 
+        # MEMORY LEAK FIX: Explicitly delete the large workspace pixmap after copying
+        del pixmap
+
         logger.info("启动截图窗口...")
         self._launch_snippers(screen_pixmaps)
         logger.info("启动窗口吸附功能...")
@@ -722,7 +725,16 @@ class ScreenshotApp(QObject):
         self.snippers = []
         
         for snipper in current_snippers:
+            # MEMORY LEAK FIX: Explicit cleanup before closing
+            if hasattr(snipper, 'full_pixmap'):
+                del snipper.full_pixmap
+            if hasattr(snipper, 'snipping_widget') and hasattr(snipper.snipping_widget, 'full_pixmap'):
+                del snipper.snipping_widget.full_pixmap
             snipper.close()
+        
+        # Force garbage collection to cleanup any remaining large objects
+        import gc
+        gc.collect()
 
     def cancel_selection(self):
         """取消当前选区，返回是否成功取消"""

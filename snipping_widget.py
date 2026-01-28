@@ -350,6 +350,13 @@ class SnippingWindow(QWidget):
              self.toolbar.hide()
 
     def closeEvent(self, event):
+        # MEMORY LEAK FIX: Explicit cleanup of large pixmaps
+        if hasattr(self, 'full_pixmap'):
+            del self.full_pixmap
+        
+        if hasattr(self, 'snipping_widget') and hasattr(self.snipping_widget, 'full_pixmap'):
+            del self.snipping_widget.full_pixmap
+            
         self.closed.emit()
         super().closeEvent(event)
 
