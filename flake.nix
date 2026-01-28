@@ -14,7 +14,7 @@
         pythonEnv = pkgs.python3.withPackages (ps: with ps; [
           pip
           virtualenv
-          # dbus-python # Removed in favor of PyQt6.QtDBus
+          dbus-python
           pillow
           evdev
           pyqt6
