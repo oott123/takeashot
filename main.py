@@ -2,6 +2,7 @@ import sys
 import signal
 import logging
 import time
+import concurrent.futures
 
 # Enable High DPI scaling - MUST be set before QApplication creation
 # Also setup DBus loop before other imports that might use it
@@ -174,7 +175,7 @@ class ScreenshotApp(QObject):
         screen_pixmaps = {}
         all_success = True
         
-        for i, screen in enumerate(screens):
+        def capture_single_screen(screen):
             capture_start = time.time()
             logger.info(f"正在截取屏幕 {screen.name()}...")
             p = self.backend.capture_screen(screen.name())
@@ -193,11 +194,21 @@ class ScreenshotApp(QObject):
                 p.setDevicePixelRatio(actual_dpr)
                 
                 logger.info(f"屏幕 {screen.name()} 截图完成 (耗时 {capture_time:.3f}s): 逻辑 {logic_w}x{geo.height()}, 物理 {phys_w}x{p.height()}, DPR {actual_dpr}")
-                screen_pixmaps[screen] = p
+                return screen, p, None
             else:
                 logger.error(f"屏幕 {screen.name()} 截图失败")
-                all_success = False
-                break
+                return screen, None, f"屏幕 {screen.name()} 截图失败"
+        
+        # 并发截图所有屏幕
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(capture_single_screen, screen) for screen in screens]
+            
+            for future in concurrent.futures.as_completed(futures):
+                screen, pixmap, error = future.result()
+                if error:
+                    all_success = False
+                    break
+                screen_pixmaps[screen] = pixmap
         
         if all_success:
             logger.info("所有屏幕截图成功，使用分屏截图模式")
