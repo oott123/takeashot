@@ -1,5 +1,7 @@
 import sys
 import signal
+import logging
+import time
 
 # Enable High DPI scaling - MUST be set before QApplication creation
 # Also setup DBus loop before other imports that might use it
@@ -23,6 +25,17 @@ from input_monitor import GlobalInputMonitor
 #     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
 # if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
 #     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('takeashot.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class ScreenshotApp(QObject):
     def __init__(self):
@@ -127,12 +140,17 @@ class ScreenshotApp(QObject):
             self.start_capture()
 
     def start_capture(self):
-        print("Starting capture...")
+        start_time = time.time()
+        logger.info("开始截图流程...")
+        
+        logger.info("关闭现有截图窗口...")
         self.close_all_snippers()
         
+        logger.info("重置注释管理器...")
         # Reset annotation manager (clears items and resets tool to pointer)
         self.annotation_manager.reset()
         
+        logger.info("重置选择状态...")
         # Reset selection state
         self.selection_rect = QRect()
         self.is_selecting = False
@@ -140,17 +158,28 @@ class ScreenshotApp(QObject):
         self.is_dragging = False
         self.click_start_pos = QPoint()
         
+        logger.info("获取可用屏幕列表...")
         screens = QGuiApplication.screens()
         if not screens:
-            print("No screens found")
+            logger.error("未找到任何屏幕")
             return
+        
+        logger.info(f"找到 {len(screens)} 个屏幕")
+        for i, screen in enumerate(screens):
+            geo = screen.geometry()
+            logger.info(f"屏幕 {i+1}: {screen.name()} - 位置({geo.x()}, {geo.y()}) 尺寸{geo.width()}x{geo.height()}")
 
+        logger.info("尝试按屏幕截图 (多屏幕/HiDPI 优化)...")
         # Attempt per-screen capture first (best for multi-monitor/HiDPI)
         screen_pixmaps = {}
         all_success = True
         
-        for screen in screens:
+        for i, screen in enumerate(screens):
+            capture_start = time.time()
+            logger.info(f"正在截取屏幕 {screen.name()}...")
             p = self.backend.capture_screen(screen.name())
+            capture_time = time.time() - capture_start
+            
             if p:
                 # Calculate the ACTUAL DPR based on physical pixels vs logical geometry
                 # This is more reliable than screen.devicePixelRatio() which may return 1.0 
@@ -163,31 +192,44 @@ class ScreenshotApp(QObject):
                 actual_dpr = phys_w / logic_w if logic_w > 0 else 1.0
                 p.setDevicePixelRatio(actual_dpr)
                 
-                print(f"Captured {screen.name()}: Logical {logic_w}x{geo.height()}, Physical {phys_w}x{p.height()}, DPR {actual_dpr}")
+                logger.info(f"屏幕 {screen.name()} 截图完成 (耗时 {capture_time:.3f}s): 逻辑 {logic_w}x{geo.height()}, 物理 {phys_w}x{p.height()}, DPR {actual_dpr}")
                 screen_pixmaps[screen] = p
             else:
+                logger.error(f"屏幕 {screen.name()} 截图失败")
                 all_success = False
                 break
         
         if all_success:
-            print("Used per-screen capture.")
+            logger.info("所有屏幕截图成功，使用分屏截图模式")
+            logger.info("启动截图窗口...")
             self._launch_snippers(screen_pixmaps)
+            logger.info("启动窗口吸附功能...")
             self._start_window_snapping()
+            
+            total_time = time.time() - start_time
+            logger.info(f"截图流程完成，总耗时 {total_time:.3f}s")
             return
 
         # Fallback to workspace capture (stitched)
-        print("Per-screen capture failed/incomplete. Falling back to workspace capture.")
+        logger.warning("分屏截图失败，回退到工作区截图模式...")
+        workspace_start = time.time()
         pixmap = self.backend.capture_workspace()
+        workspace_time = time.time() - workspace_start
+        
         if not pixmap:
-            print("Failed to capture screenshot.")
+            logger.error("工作区截图失败")
             return
+        
+        logger.info(f"工作区截图完成 (耗时 {workspace_time:.3f}s)")
 
+        logger.info("计算屏幕边界并分割工作区截图...")
         screen_pixmaps = {}
         # Calculate bounding box of all screens to find offsets
         x_min = min(s.geometry().x() for s in screens)
         y_min = min(s.geometry().y() for s in screens)
+        logger.info(f"屏幕边界: 左上角({x_min}, {y_min})")
         
-        for screen in screens:
+        for i, screen in enumerate(screens):
             geo = screen.geometry()
             dpr = screen.devicePixelRatio()
             
@@ -199,30 +241,46 @@ class ScreenshotApp(QObject):
             phy_w = int(geo.width() * dpr)
             phy_h = int(geo.height() * dpr)
             
+            logger.info(f"处理屏幕 {screen.name()}: 相对位置({rel_x}, {rel_y}), 物理位置({phy_x}, {phy_y}), 物理尺寸{phy_w}x{phy_h}")
+            
             screen_pixmap = pixmap.copy(phy_x, phy_y, phy_w, phy_h)
             screen_pixmap.setDevicePixelRatio(dpr)
             screen_pixmaps[screen] = screen_pixmap
 
+        logger.info("启动截图窗口...")
         self._launch_snippers(screen_pixmaps)
+        logger.info("启动窗口吸附功能...")
         self._start_window_snapping()
+        
+        total_time = time.time() - start_time
+        logger.info(f"截图流程完成，总耗时 {total_time:.3f}s")
 
     def _launch_snippers(self, screen_pixmaps):
+        logger.info(f"为 {len(screen_pixmaps)} 个屏幕创建截图窗口...")
         for screen, pixmap in screen_pixmaps.items():
             geo = screen.geometry()
+            logger.info(f"创建 {screen.name()} 的截图窗口: 位置({geo.x()}, {geo.y()}) 尺寸{geo.width()}x{geo.height()}")
+            
             snipper = SnippingWindow(self, pixmap, geo.x(), geo.y(), geo.width(), geo.height())
             snipper.closed.connect(self.on_snipper_closed)
             
             if snipper.windowHandle():
                 snipper.windowHandle().setScreen(screen)
+                logger.info(f"为 {screen.name()} 设置了屏幕句柄")
+            else:
+                logger.warning(f"无法为 {screen.name()} 获取窗口句柄")
                 
             snipper.show()
             self.snippers.append(snipper)
+            logger.info(f"{screen.name()} 截图窗口已显示")
 
     def _start_window_snapping(self):
         """启动异步窗口列表获取，启用窗口吸附功能"""
-        print("Starting window list retrieval for snapping...")
+        logger.info("初始化窗口吸附功能...")
         self.window_lister = WindowLister(self.dbus_manager)
         self.window_lister.windows_ready.connect(self._on_windows_ready)
+        
+        logger.info("开始异步获取窗口列表...")
         self.window_lister.get_windows_async()
 
     def _on_windows_ready(self, windows):
@@ -230,11 +288,15 @@ class ScreenshotApp(QObject):
         if windows:
             self.windows = windows
             self.snapping_enabled = True
-            print(f"Window snapping enabled with {len(windows)} windows")
+            logger.info(f"窗口吸附功能已启用，共获取到 {len(windows)} 个窗口")
+            for i, window in enumerate(windows[:5]):  # 只记录前5个窗口避免日志过长
+                logger.info(f"窗口 {i+1}: {window.get('title', 'Unknown')} - 位置({window.get('x', 0)}, {window.get('y', 0)}) 尺寸{window.get('width', 0)}x{window.get('height', 0)}")
+            if len(windows) > 5:
+                logger.info(f"...还有 {len(windows) - 5} 个窗口未显示")
         else:
             self.windows = []
             self.snapping_enabled = False
-            print("Window snapping disabled (no windows retrieved)")
+            logger.warning("窗口吸附功能已禁用（未获取到窗口列表）")
 
     def _get_window_at(self, global_pos):
         """获取鼠标位置下的窗口，如果没有则返回None"""
