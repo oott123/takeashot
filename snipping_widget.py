@@ -196,31 +196,62 @@ class SnippingWindow(QWidget):
         
         # Toolbar (QQuickWidget)
         self.toolbar = QQuickWidget(self)
-        self.toolbar.setSource(QUrl.fromLocalFile("Toolbar.qml"))
-        if self.toolbar.status() == QQuickWidget.Status.Error:
-             for error in self.toolbar.errors():
-                 print("QML Error:", error.toString())
-
         self.toolbar.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self.toolbar.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop)
         self.toolbar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.toolbar.setClearColor(Qt.GlobalColor.transparent)
+        
+        # Load QML source
+        self.toolbar.setSource(QUrl.fromLocalFile("Toolbar.qml"))
+        if self.toolbar.status() == QQuickWidget.Status.Error:
+             for error in self.toolbar.errors():
+                 print("QML Error:", error.toString())
+        elif self.toolbar.status() == QQuickWidget.Status.Loading:
+             print("QML is loading...")
+        
         self.toolbar.hide() # Hidden by default
 
         # Store top_padding for mouse event handling
         self._top_padding = 0
         
-        # Connect QML Signals
-        root = self.toolbar.rootObject()
-        if root:
-             root.cancelRequested.connect(self.handle_cancel_or_exit)
-             root.saveRequested.connect(lambda: print("Save requested (not implemented)"))
-             root.confirmRequested.connect(self.handle_confirm_click)
-             root.toolSelected.connect(self.handle_tool_selected)
-        else:
-             print("Error: Could not load QML root object")
+        # Connect QML Signals - wait for QML to load if needed
+        def connect_qml_signals():
+            root = self.toolbar.rootObject()
+            if root:
+                 root.cancelRequested.connect(self.handle_cancel_or_exit)
+                 root.saveRequested.connect(lambda: print("Save requested (not implemented)"))
+                 root.confirmRequested.connect(self.handle_confirm_click)
+                 root.toolSelected.connect(self.handle_tool_selected)
+                 print("QML signals connected successfully")
+            else:
+                 print("Warning: Could not load QML root object during initialization")
+                 # Retry after a short delay
+                 QTimer.singleShot(100, connect_qml_signals)
+        
+        # Start connection process
+        connect_qml_signals()
         
         self.show()
+        
+        # Ensure QML component is properly initialized after window is shown
+        QTimer.singleShot(100, self._ensure_qml_loaded)
+
+    def _ensure_qml_loaded(self):
+        """Ensure QML component is properly loaded and ready"""
+        if self.toolbar.status() == QQuickWidget.Status.Error:
+            print("QML failed to load properly")
+            for error in self.toolbar.errors():
+                print("QML Error:", error.toString())
+        elif self.toolbar.status() == QQuickWidget.Status.Loading:
+            # Still loading, check again later
+            QTimer.singleShot(100, self._ensure_qml_loaded)
+        elif self.toolbar.status() == QQuickWidget.Status.Ready:
+            root = self.toolbar.rootObject()
+            if not root:
+                print("Warning: QML is ready but root object is not available")
+                QTimer.singleShot(50, self._ensure_qml_loaded)
+            else:
+                print("QML component is fully loaded and ready")
 
     def resizeEvent(self, event):
         self.snipping_widget.resize(event.size())
@@ -267,6 +298,13 @@ class SnippingWindow(QWidget):
         root = self.toolbar.rootObject()
         if root:
             QMetaObject.invokeMethod(root, "selectTool", Qt.ConnectionType.DirectConnection, Q_ARG(QVariant, tool_name))
+        else:
+            # If root object is not available, schedule a retry
+            def retry_reset():
+                root = self.toolbar.rootObject()
+                if root:
+                    QMetaObject.invokeMethod(root, "selectTool", Qt.ConnectionType.DirectConnection, Q_ARG(QVariant, tool_name))
+            QTimer.singleShot(50, retry_reset)
 
     def update_toolbar_position(self):
         # Update Toolbar Position
@@ -282,7 +320,22 @@ class SnippingWindow(QWidget):
              # Toolbar size comes from QML
              root_obj = self.toolbar.rootObject()
              if not root_obj:
-                 return # Toolbar failed to load, skip positioning
+                  # Try to ensure QML is loaded and wait a bit if needed
+                  if self.toolbar.status() == QQuickWidget.Status.Loading:
+                      # QML is still loading, schedule a retry
+                      QTimer.singleShot(50, self.update_toolbar_position)
+                      return
+                  elif self.toolbar.status() == QQuickWidget.Status.Error:
+                      # QML failed to load, print errors and skip
+                      print("QML Errors:", [error.toString() for error in self.toolbar.errors()])
+                      return
+                  else:
+                      # Try to force QML initialization
+                      self.toolbar.show()  # Force initialization
+                      root_obj = self.toolbar.rootObject()
+                      if not root_obj:
+                          print("Warning: Could not get QML root object, toolbar positioning skipped")
+                          return
 
              w = root_obj.width()
              h = root_obj.height()
