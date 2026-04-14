@@ -5,7 +5,11 @@
       "WebSearch",
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:crates.io)",
-      "Bash(cargo search:*)"
+      "Bash(cargo search:*)",
+      "Bash(cargo init:*)",
+      "Bash(cargo:*)",
+      "Bash(grep)",
+      "Bash(grep:*)"
     ]
   }
 }
