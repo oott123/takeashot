@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Takeashot
+Comment=KDE Wayland screenshot tool
+Exec=takeashot
+Icon=takeashot
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2

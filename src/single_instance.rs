@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use zbus::{Connection, interface};
 
 use std::sync::Arc;
@@ -46,43 +46,31 @@ trait TakeashotServiceProxy {
     fn activate(&self) -> zbus::Result<()>;
 }
 
-/// Try to register `com.takeashot.service` on the session bus.
+/// Try to register `com.takeashot.service` on the given connection.
 ///
-/// - On success: returns the connection (we are the primary owner).
+/// - On success: the service is registered on `conn`.
 /// - On failure: calls `activate()` on the existing instance and returns an error
 ///   so the caller can exit.
-pub async fn register_or_activate(handle: SessionHandle) -> Result<Connection> {
+pub async fn register_or_activate(conn: &Connection, handle: SessionHandle) -> Result<()> {
     let service = TakeashotService {
         handle: handle.clone(),
     };
 
-    let conn = Connection::session()
-        .await
-        .context("failed to connect to session bus")?;
-
-    let result = conn
-        .object_server()
+    conn.object_server()
         .at("/com/takeashot/Service", service)
-        .await;
-
-    match result {
-        Ok(_) => {}
-        Err(e) => {
-            tracing::warn!("failed to register object: {e}, instance may already exist");
-        }
-    }
+        .await
+        .ok(); // Ignore error — object may already be registered on this connection.
 
     let request_result = conn.request_name("com.takeashot.service").await;
 
     match request_result {
         Ok(_) => {
             tracing::info!("registered com.takeashot.service on session bus");
-            Ok(conn)
+            Ok(())
         }
         Err(_) => {
             tracing::info!("com.takeashot.service already owned, activating existing instance");
-            // Try to activate the existing instance.
-            match TakeashotServiceProxyProxy::new(&conn).await {
+            match TakeashotServiceProxyProxy::new(conn).await {
                 Ok(proxy) => {
                     if let Err(activate_err) = proxy.activate().await {
                         tracing::warn!("failed to call activate() on existing instance: {activate_err}");

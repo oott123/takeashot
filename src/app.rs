@@ -8,15 +8,20 @@ use crate::single_instance::SessionHandle;
 pub struct App {
     /// Receives trigger signals (Pause key or D-Bus activate).
     trigger_rx: watch::Receiver<bool>,
+    /// D-Bus connection for KWin calls.
+    dbus_conn: zbus::Connection,
 }
 
 impl App {
     /// Create a new App and a SessionHandle for the D-Bus service.
-    pub fn new() -> (Self, SessionHandle) {
+    pub fn new(dbus_conn: zbus::Connection) -> (Self, SessionHandle) {
         let (activate_tx, trigger_rx) = watch::channel(false);
         let window_data_tx = Arc::new(Mutex::new(None));
 
-        let app = App { trigger_rx };
+        let app = App {
+            trigger_rx,
+            dbus_conn,
+        };
         let handle = SessionHandle {
             activate_tx,
             window_data_tx,
@@ -26,7 +31,7 @@ impl App {
     }
 
     /// Run the main event loop. Waits for trigger signals and starts
-    /// screenshot sessions. For M1, we just log and acknowledge.
+    /// screenshot sessions.
     pub async fn run(mut self) -> anyhow::Result<()> {
         tracing::info!("app running, waiting for trigger...");
 
@@ -34,9 +39,20 @@ impl App {
             // Wait for the trigger channel to change.
             self.trigger_rx.changed().await?;
 
-            tracing::info!("trigger received — starting screenshot session (M1 stub)");
+            tracing::info!("trigger received — starting screenshot session");
 
-            // M1: just acknowledge. Future milestones will launch ShotSession here.
+            if let Err(e) = self.start_session().await {
+                tracing::error!("session failed: {e:#}");
+            }
         }
+    }
+
+    /// Show the overlay. Capture is done inside the overlay after it
+    /// enumerates Wayland outputs, so each screen gets its own capture.
+    async fn start_session(&self) -> anyhow::Result<()> {
+        tracing::info!("starting overlay");
+        crate::overlay::run(self.dbus_conn.clone())?;
+        tracing::info!("overlay closed");
+        Ok(())
     }
 }

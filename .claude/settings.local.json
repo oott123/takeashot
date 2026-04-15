@@ -9,7 +9,18 @@
       "Bash(cargo init:*)",
       "Bash(cargo:*)",
       "Bash(grep)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(busctl:*)",
+      "Bash(ls:*)",
+      "Bash(pkg-config --libs xkbcommon)",
+      "Bash(dpkg -l libxkbcommon-dev)",
+      "Bash(pacman -Q libxkbcommon)",
+      "Bash(find:*)",
+      "Bash(sed:*)",
+      "Bash(RUST_LOG=debug /home/alice/Repos/newshot/target/debug/takeashot --now)",
+      "Bash(RUST_LOG=info /home/alice/Repos/newshot/target/debug/takeashot --now)",
+      "Bash(pkill -f \"takeashot --now\")",
+      "Bash(timeout 8 bash -c 'RUST_LOG=info /home/alice/Repos/newshot/target/debug/takeashot --now 2>&1')"
     ]
   }
 }

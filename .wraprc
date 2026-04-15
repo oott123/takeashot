@@ -1,0 +1,1 @@
+args+=(--bind /dev/input /dev/input)
