@@ -41,8 +41,7 @@ async fn main() -> Result<()> {
 
     if args.smoke {
         tracing::info!("smoke test mode");
-        let captured = capture::capture_all(&dbus_conn, &[]).await?;
-        overlay::run_with_timeout(dbus_conn, captured, std::time::Duration::from_secs(3))?;
+        overlay::run_with_timeout(dbus_conn, std::time::Duration::from_secs(3))?;
         tracing::info!("smoke test passed");
         return Ok(());
     }

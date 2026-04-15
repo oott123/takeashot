@@ -281,15 +281,14 @@ pub fn run(dbus_conn: zbus::Connection) -> Result<()> {
 /// After `timeout` elapses, the overlay closes automatically.
 pub fn run_with_timeout(
     dbus_conn: zbus::Connection,
-    pre_captured: Vec<CapturedScreen>,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    run_inner(dbus_conn, Some((pre_captured, timeout)))
+    run_inner(dbus_conn, Some(timeout))
 }
 
 fn run_inner(
     dbus_conn: zbus::Connection,
-    smoke: Option<(Vec<CapturedScreen>, std::time::Duration)>,
+    timeout: Option<std::time::Duration>,
 ) -> Result<()> {
     let conn = Connection::connect_to_env().context("failed to connect to Wayland display")?;
     let display_ptr = get_display_ptr(&conn);
@@ -332,17 +331,12 @@ fn run_inner(
     }
     tracing::info!("detected outputs: {output_names:?}");
 
-    // Do per-screen capture via KWin D-Bus (unless smoke mode provides pre-captured data).
-    let smoke_timeout = smoke.as_ref().map(|(_, dur)| *dur);
-    if let Some((pre_captured, _)) = smoke {
-        state.captured = pre_captured;
-    } else {
-        state.captured = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(
-                capture::capture_all(&dbus_conn, &output_names)
-            )
-        })?;
-    }
+    // Per-screen capture via KWin D-Bus.
+    state.captured = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(
+            capture::capture_all(&dbus_conn, &output_names)
+        )
+    })?;
 
     state.create_overlays(&qh);
 
@@ -354,7 +348,7 @@ fn run_inner(
 
     tracing::info!("overlay event loop starting");
 
-    let deadline = smoke_timeout.map(|dur| {
+    let deadline = timeout.map(|dur| {
         let instant = std::time::Instant::now() + dur;
         tracing::info!("smoke mode: will auto-exit in {:?}", dur);
         instant
