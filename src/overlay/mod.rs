@@ -274,6 +274,23 @@ fn get_display_ptr(conn: &Connection) -> *mut std::ffi::c_void {
 ///
 /// The D-Bus connection is used for per-screen KWin captures after outputs are enumerated.
 pub fn run(dbus_conn: zbus::Connection) -> Result<()> {
+    run_inner(dbus_conn, None)
+}
+
+/// Run the overlay event loop with an auto-exit timeout.
+/// After `timeout` elapses, the overlay closes automatically.
+pub fn run_with_timeout(
+    dbus_conn: zbus::Connection,
+    pre_captured: Vec<CapturedScreen>,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    run_inner(dbus_conn, Some((pre_captured, timeout)))
+}
+
+fn run_inner(
+    dbus_conn: zbus::Connection,
+    smoke: Option<(Vec<CapturedScreen>, std::time::Duration)>,
+) -> Result<()> {
     let conn = Connection::connect_to_env().context("failed to connect to Wayland display")?;
     let display_ptr = get_display_ptr(&conn);
 
@@ -315,14 +332,17 @@ pub fn run(dbus_conn: zbus::Connection) -> Result<()> {
     }
     tracing::info!("detected outputs: {output_names:?}");
 
-    // Do per-screen capture via KWin D-Bus.
-    let captured = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(
-            capture::capture_all(&dbus_conn, &output_names)
-        )
-    })?;
-
-    state.captured = captured;
+    // Do per-screen capture via KWin D-Bus (unless smoke mode provides pre-captured data).
+    let smoke_timeout = smoke.as_ref().map(|(_, dur)| *dur);
+    if let Some((pre_captured, _)) = smoke {
+        state.captured = pre_captured;
+    } else {
+        state.captured = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                capture::capture_all(&dbus_conn, &output_names)
+            )
+        })?;
+    }
 
     state.create_overlays(&qh);
 
@@ -334,8 +354,43 @@ pub fn run(dbus_conn: zbus::Connection) -> Result<()> {
 
     tracing::info!("overlay event loop starting");
 
+    let deadline = smoke_timeout.map(|dur| {
+        let instant = std::time::Instant::now() + dur;
+        tracing::info!("smoke mode: will auto-exit in {:?}", dur);
+        instant
+    });
+
     while !state.exit_requested {
-        event_queue.blocking_dispatch(&mut state)?;
+        if let Some(dl) = deadline {
+            if std::time::Instant::now() >= dl {
+                tracing::info!("smoke timeout reached, exiting");
+                break;
+            }
+            // Non-blocking dispatch + poll with remaining timeout
+            event_queue.dispatch_pending(&mut state)?;
+            event_queue.flush()?;
+
+            let remaining = dl.saturating_duration_since(std::time::Instant::now());
+            if !remaining.is_zero() {
+                use std::os::fd::{AsFd, AsRawFd};
+                let wayland_fd = conn.as_fd().as_raw_fd();
+                let mut pfd = libc::pollfd {
+                    fd: wayland_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ms = remaining.as_millis() as i32;
+                // SAFETY: poll() on a single fd with timeout
+                unsafe { libc::poll(&mut pfd, 1, ms); }
+            }
+            // Read and dispatch what arrived
+            if let Some(guard) = conn.prepare_read() {
+                let _ = guard.read();
+            }
+            event_queue.dispatch_pending(&mut state)?;
+        } else {
+            event_queue.blocking_dispatch(&mut state)?;
+        }
     }
 
     tracing::info!("overlay exiting");

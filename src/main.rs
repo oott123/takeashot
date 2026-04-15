@@ -14,6 +14,10 @@ struct Args {
     /// Start a screenshot immediately instead of waiting for hotkey.
     #[arg(short, long)]
     now: bool,
+
+    /// Smoke test: skip single-instance check, show overlay, auto-exit after 3 seconds.
+    #[arg(long)]
+    smoke: bool,
 }
 
 #[tokio::main]
@@ -34,6 +38,14 @@ async fn main() -> Result<()> {
     let dbus_conn = zbus::Connection::session()
         .await
         .map_err(|e| anyhow::anyhow!("failed to connect to session bus: {e}"))?;
+
+    if args.smoke {
+        tracing::info!("smoke test mode");
+        let captured = capture::capture_all(&dbus_conn, &[]).await?;
+        overlay::run_with_timeout(dbus_conn, captured, std::time::Duration::from_secs(3))?;
+        tracing::info!("smoke test passed");
+        return Ok(());
+    }
 
     // Create the App and a handle for D-Bus to call back into.
     let (app, handle) = app::App::new(dbus_conn.clone());
