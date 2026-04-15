@@ -154,15 +154,23 @@ impl SelectionState {
     }
 
     /// Handle a pointer press event.
-    pub fn on_pointer_press(&mut self, pos: (f64, f64), button: u32) {
-        // Right click cancels
+    /// Returns true if the overlay should exit (right-click with no selection).
+    pub fn on_pointer_press(&mut self, pos: (f64, f64), button: u32) -> bool {
+        // Right click: cancel selection or exit
         if button == BTN_RIGHT {
-            self.cancel();
-            return;
+            match self.selection {
+                Selection::Confirmed { .. } | Selection::Pending { .. } => {
+                    self.cancel();
+                    return false;
+                }
+                Selection::None => {
+                    return true; // signal exit
+                }
+            }
         }
 
         if button != BTN_LEFT {
-            return;
+            return false;
         }
 
         let p = Point::new(pos.0 as i32, pos.1 as i32);
@@ -172,7 +180,6 @@ impl SelectionState {
                 self.drag = Some(DragOp::Creating);
                 self.drag_start_pos = Some(pos);
                 self.drag_start_rect = None;
-                // Create a zero-size pending selection at click point
                 self.selection = Selection::Pending {
                     rect: Rect::new(p.x, p.y, 0, 0),
                 };
@@ -189,11 +196,13 @@ impl SelectionState {
                     self.drag_start_pos = Some(pos);
                     self.drag_start_rect = Some(rect);
                 } else {
-                    // External extension
+                    // External extension: immediately expand to include click point
                     let handle = Self::extension_handle(&rect, p);
+                    let expanded = Self::expand_to_include(&rect, p);
                     self.drag = Some(DragOp::Extending(handle));
                     self.drag_start_pos = Some(pos);
-                    self.drag_start_rect = Some(rect);
+                    self.drag_start_rect = Some(expanded);
+                    self.selection = Selection::Confirmed { rect: expanded };
                 }
             }
             Selection::Pending { .. } => {
@@ -208,6 +217,17 @@ impl SelectionState {
         }
 
         self.last_pointer = Some(pos);
+        false
+    }
+
+    /// Expand a rect to include a point, using the same directional logic as extension.
+    fn expand_to_include(rect: &Rect, p: Point) -> Rect {
+        let mut r = *rect;
+        if p.x < r.x { r.w += r.x - p.x; r.x = p.x; }
+        if p.x >= r.right() { r.w = p.x - r.x; }
+        if p.y < r.y { r.h += r.y - p.y; r.y = p.y; }
+        if p.y >= r.bottom() { r.h = p.y - r.y; }
+        r
     }
 
     /// Handle a pointer motion event.
@@ -438,16 +458,23 @@ mod tests {
         let mut s = SelectionState::new();
         s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
 
-        // Click below the rect, horizontally centered
+        // Click below the rect (200, 400) — immediately expands bottom to 400
         s.on_pointer_press((200.0, 400.0), BTN_LEFT);
-        s.on_pointer_motion((200.0, 450.0));
-        s.on_pointer_release((200.0, 450.0), BTN_LEFT);
-
-        // drag_start_pos=(200,400), total dy from start = 50
-        // Bottom handle: h += 50
+        // After press: rect bottom is now 400, so h=300 (400-100)
         match s.selection {
             Selection::Confirmed { rect } => {
-                assert_eq!(rect.h, 250);
+                assert_eq!(rect.h, 300);
+                assert_eq!(rect.y, 100);
+            }
+            _ => panic!("expected Confirmed after press"),
+        }
+
+        // Drag further down to 450 — extends another 50 from drag start
+        s.on_pointer_motion((200.0, 450.0));
+        s.on_pointer_release((200.0, 450.0), BTN_LEFT);
+        match s.selection {
+            Selection::Confirmed { rect } => {
+                assert_eq!(rect.h, 350); // 300 + 50
                 assert_eq!(rect.y, 100);
             }
             _ => panic!("expected Confirmed"),
@@ -459,16 +486,21 @@ mod tests {
         let mut s = SelectionState::new();
         s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
 
-        // Click to the right of the rect, vertically centered
+        // Click to the right (400, 200) — immediately expands right to 400
         s.on_pointer_press((400.0, 200.0), BTN_LEFT);
-        s.on_pointer_motion((450.0, 200.0));
-        s.on_pointer_release((450.0, 200.0), BTN_LEFT);
-
-        // drag_start_pos=(400,200), total dx from start = 50
-        // Right handle: w += 50
         match s.selection {
             Selection::Confirmed { rect } => {
-                assert_eq!(rect.w, 250);
+                assert_eq!(rect.w, 300); // 400 - 100
+                assert_eq!(rect.x, 100);
+            }
+            _ => panic!("expected Confirmed after press"),
+        }
+
+        s.on_pointer_motion((450.0, 200.0));
+        s.on_pointer_release((450.0, 200.0), BTN_LEFT);
+        match s.selection {
+            Selection::Confirmed { rect } => {
+                assert_eq!(rect.w, 350); // 300 + 50
                 assert_eq!(rect.x, 100);
             }
             _ => panic!("expected Confirmed"),
@@ -480,16 +512,22 @@ mod tests {
         let mut s = SelectionState::new();
         s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
 
-        // Click bottom-right corner area (outside both axes)
+        // Click bottom-right (400, 400) — immediately expands to include that point
         s.on_pointer_press((400.0, 400.0), BTN_LEFT);
-        s.on_pointer_motion((450.0, 450.0));
-        s.on_pointer_release((450.0, 450.0), BTN_LEFT);
-
-        // BottomRight handle: w += 50, h += 50
         match s.selection {
             Selection::Confirmed { rect } => {
-                assert_eq!(rect.w, 250);
-                assert_eq!(rect.h, 250);
+                assert_eq!(rect.w, 300); // 400 - 100
+                assert_eq!(rect.h, 300); // 400 - 100
+            }
+            _ => panic!("expected Confirmed after press"),
+        }
+
+        s.on_pointer_motion((450.0, 450.0));
+        s.on_pointer_release((450.0, 450.0), BTN_LEFT);
+        match s.selection {
+            Selection::Confirmed { rect } => {
+                assert_eq!(rect.w, 350); // 300 + 50
+                assert_eq!(rect.h, 350); // 300 + 50
             }
             _ => panic!("expected Confirmed"),
         }
@@ -500,8 +538,16 @@ mod tests {
         let mut s = SelectionState::new();
         s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
 
-        s.on_pointer_press((150.0, 150.0), BTN_RIGHT);
+        let should_exit = s.on_pointer_press((150.0, 150.0), BTN_RIGHT);
+        assert!(!should_exit);
         assert_eq!(s.selection, Selection::None);
+    }
+
+    #[test]
+    fn right_click_no_selection_exits() {
+        let mut s = SelectionState::new();
+        let should_exit = s.on_pointer_press((100.0, 100.0), BTN_RIGHT);
+        assert!(should_exit);
     }
 
     #[test]

@@ -412,7 +412,9 @@ impl PointerHandler for OverlayState {
 
             match &event.kind {
                 PointerEventKind::Press { button, .. } => {
-                    self.selection.on_pointer_press(global_pos, *button);
+                    if self.selection.on_pointer_press(global_pos, *button) {
+                        self.exit_requested = true;
+                    }
                 }
                 PointerEventKind::Release { button, .. } => {
                     self.selection.on_pointer_release(global_pos, *button);
