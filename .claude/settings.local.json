@@ -24,7 +24,8 @@
       "Bash(timeout 10 bash -c 'RUST_LOG=info /home/alice/Repos/newshot/target/debug/takeashot --smoke 2>&1')",
       "Bash(timeout 12 bash -c 'RUST_LOG=info /home/alice/Repos/newshot/target/debug/takeashot --smoke 2>&1')",
       "Bash(cat ~/.cargo/:*)",
-      "Bash(cat ~/.cargo/*)"
+      "Bash(cat ~/.cargo/*)",
+      "Bash(wc:*)"
     ]
   }
 }
