@@ -29,6 +29,7 @@ struct OutputOverlay {
     output_name: Option<String>,
     width: u32,
     height: u32,
+    scale_factor: i32,
     configured: bool,
     wgpu_surface: Option<wgpu::Surface<'static>>,
     bg_bind_group: Option<wgpu::BindGroup>,
@@ -91,12 +92,21 @@ impl OverlayState {
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+
+        // Determine initial scale factor from output info.
+        let scale = output
+            .and_then(|o| self.output_state.info(o))
+            .map(|info| info.scale_factor)
+            .unwrap_or(1);
+        layer.wl_surface().set_buffer_scale(scale);
+
         layer.commit();
         self.overlays.push(OutputOverlay {
-            layer, output_name, width: 0, height: 0, configured: false,
+            layer, output_name, width: 0, height: 0, scale_factor: scale,
+            configured: false,
             wgpu_surface: None, bg_bind_group: None, surface_config: None,
         });
-        tracing::info!("layer surface created and committed");
+        tracing::info!("layer surface created and committed (scale={scale})");
     }
 
     fn find_captured(&self, output_name: &Option<String>) -> Option<&CapturedScreen> {
@@ -123,7 +133,13 @@ impl OverlayState {
 }
 
 impl CompositorHandler for OverlayState {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
+    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, scale: i32) {
+        if let Some(overlay) = self.overlays.iter_mut().find(|o| o.layer.wl_surface() == surface) {
+            tracing::info!("scale factor changed: {} → {}", overlay.scale_factor, scale);
+            overlay.scale_factor = scale;
+            surface.set_buffer_scale(scale);
+        }
+    }
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) { self.render_all(); }
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
@@ -156,6 +172,11 @@ impl LayerShellHandler for OverlayState {
 
         let output_name = self.overlays[idx].output_name.clone();
         let needs_init = self.overlays[idx].wgpu_surface.is_none();
+        let scale = self.overlays[idx].scale_factor.max(1);
+
+        // Physical (buffer) size = logical size × scale factor
+        let phys_w = w * scale as u32;
+        let phys_h = h * scale as u32;
 
         self.overlays[idx].width = w;
         self.overlays[idx].height = h;
@@ -169,7 +190,7 @@ impl LayerShellHandler for OverlayState {
 
             let wgpu_surf = match self.gpu.create_surface_from_wayland(self.display_ptr, surface_ptr) {
                 Ok(s) => {
-                    tracing::info!("wgpu surface created successfully, size={w}x{h}");
+                    tracing::info!("wgpu surface created successfully, logical={w}x{h}, physical={phys_w}x{phys_h}, scale={scale}");
                     s
                 }
                 Err(e) => {
@@ -181,7 +202,7 @@ impl LayerShellHandler for OverlayState {
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: wgpu::TextureFormat::Bgra8UnormSrgb,
-                width: w, height: h,
+                width: phys_w, height: phys_h,
                 present_mode: wgpu::PresentMode::Fifo,
                 alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
                 view_formats: vec![],
@@ -207,8 +228,8 @@ impl LayerShellHandler for OverlayState {
             self.overlays[idx].bg_bind_group = Some(bg_bind_group);
             self.overlays[idx].surface_config = Some(config);
         } else if self.overlays[idx].wgpu_surface.is_some() && self.overlays[idx].surface_config.is_some() {
-            self.overlays[idx].surface_config.as_mut().unwrap().width = w;
-            self.overlays[idx].surface_config.as_mut().unwrap().height = h;
+            self.overlays[idx].surface_config.as_mut().unwrap().width = phys_w;
+            self.overlays[idx].surface_config.as_mut().unwrap().height = phys_h;
             let surf = self.overlays[idx].wgpu_surface.as_ref().unwrap();
             let config = self.overlays[idx].surface_config.as_ref().unwrap();
             surf.configure(&self.gpu.device, config);
