@@ -1,7 +1,73 @@
 use anyhow::{Context, Result};
+use bytemuck::{Pod, Zeroable};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle};
 use std::sync::Arc;
 use wgpu::*;
+
+use crate::geom::Rect;
+
+/// Selection rect uniform — in [0,1] fraction of the surface.
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct SelectionUniform {
+    /// x, y = top-left in [0,1]; z, w = size in [0,1].
+    /// z <= 0 or w <= 0 means no selection.
+    pub rect: [f32; 4],
+}
+
+impl SelectionUniform {
+    pub fn none() -> Self {
+        Self { rect: [0.0, 0.0, 0.0, 0.0] }
+    }
+
+    /// Create from a Rect in pixel coordinates, relative to the output's local origin.
+    /// `surface_size` is (width, height) of the output surface.
+    pub fn from_rect(rect: &Rect, surface_size: (u32, u32)) -> Self {
+        if rect.is_empty() {
+            return Self::none();
+        }
+        let sw = surface_size.0 as f32;
+        let sh = surface_size.1 as f32;
+        if sw <= 0.0 || sh <= 0.0 {
+            return Self::none();
+        }
+        Self {
+            rect: [
+                rect.x as f32 / sw,
+                rect.y as f32 / sh,
+                rect.w as f32 / sw,
+                rect.h as f32 / sh,
+            ],
+        }
+    }
+}
+
+/// Vertex for handles/border (position in clip-space + color).
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct ColoredVertex {
+    pub position: [f32; 2],
+    pub color: [f32; 4],
+}
+
+impl ColoredVertex {
+    const DESC: VertexBufferLayout<'static> = VertexBufferLayout {
+        array_stride: std::mem::size_of::<Self>() as u64,
+        step_mode: VertexStepMode::Vertex,
+        attributes: &[
+            VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: VertexFormat::Float32x2,
+            },
+            VertexAttribute {
+                offset: std::mem::size_of::<[f32; 2]>() as u64,
+                shader_location: 1,
+                format: VertexFormat::Float32x4,
+            },
+        ],
+    };
+}
 
 /// Shared GPU resources.
 pub struct Gpu {
@@ -9,8 +75,9 @@ pub struct Gpu {
     pub queue: Arc<Queue>,
     instance: Arc<Instance>,
     screenshot_pipeline: RenderPipeline,
-    overlay_pipeline: RenderPipeline,
+    handles_pipeline: RenderPipeline,
     bind_group_layout: BindGroupLayout,
+    selection_bgl: BindGroupLayout,
     sampler: Sampler,
 }
 
@@ -68,14 +135,28 @@ impl Gpu {
             ],
         });
 
+        let selection_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("selection uniform layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(std::num::NonZeroU64::new(std::mem::size_of::<SelectionUniform>() as u64).unwrap()),
+                },
+                count: None,
+            }],
+        });
+
         let screenshot_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("screenshot pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&bind_group_layout), Some(&selection_bgl)],
             immediate_size: 0,
         });
 
-        let overlay_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("overlay pipeline layout"),
+        let handles_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("handles pipeline layout"),
             bind_group_layouts: &[],
             immediate_size: 0,
         });
@@ -85,17 +166,10 @@ impl Gpu {
             source: ShaderSource::Wgsl(include_str!("shaders/screenshot.wgsl").into()),
         });
 
-        let shader_overlay = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("overlay shader"),
-            source: ShaderSource::Wgsl(include_str!("shaders/overlay.wgsl").into()),
+        let shader_handles = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("handles shader"),
+            source: ShaderSource::Wgsl(include_str!("shaders/handles.wgsl").into()),
         });
-
-        let _common_vertex = VertexState {
-            module: &shader_screenshot, // Just for the vertex shader, same for both
-            entry_point: Some("vs"),
-            buffers: &[],
-            compilation_options: Default::default(),
-        };
 
         let screenshot_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("screenshot pipeline"),
@@ -123,17 +197,17 @@ impl Gpu {
             cache: None,
         });
 
-        let overlay_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("overlay pipeline"),
-            layout: Some(&overlay_layout),
+        let handles_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("handles pipeline"),
+            layout: Some(&handles_layout),
             vertex: VertexState {
-                module: &shader_overlay,
+                module: &shader_handles,
                 entry_point: Some("vs"),
-                buffers: &[],
+                buffers: &[ColoredVertex::DESC],
                 compilation_options: Default::default(),
             },
             fragment: Some(FragmentState {
-                module: &shader_overlay,
+                module: &shader_handles,
                 entry_point: Some("fs"),
                 targets: &[Some(ColorTargetState {
                     format: TextureFormat::Bgra8UnormSrgb,
@@ -153,7 +227,10 @@ impl Gpu {
                 })],
                 compilation_options: Default::default(),
             }),
-            primitive: PrimitiveState::default(),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                ..PrimitiveState::default()
+            },
             depth_stencil: None,
             multisample: MultisampleState::default(),
             multiview_mask: None,
@@ -175,8 +252,9 @@ impl Gpu {
             queue,
             instance,
             screenshot_pipeline,
-            overlay_pipeline,
+            handles_pipeline,
             bind_group_layout,
+            selection_bgl,
             sampler,
         })
     }
@@ -253,21 +331,117 @@ impl Gpu {
         })
     }
 
-    /// Render a single frame: screenshot background + dark overlay.
+    /// Create a bind group for the selection uniform buffer.
+    pub fn create_selection_bind_group(&self, buffer: &Buffer) -> BindGroup {
+        self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("selection bind group"),
+            layout: &self.selection_bgl,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        })
+    }
+
+    /// Create a uniform buffer for the selection rect.
+    pub fn create_selection_buffer(&self) -> Buffer {
+        self.device.create_buffer(&BufferDescriptor {
+            label: Some("selection uniform buffer"),
+            size: std::mem::size_of::<SelectionUniform>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Maximum vertices for selection geometry:
+    /// 4 border quads × 6 + 8 handle quads × 6 = 72
+    const MAX_SELECTION_VERTICES: u64 = 72;
+
+    /// Create a pre-allocated vertex buffer for selection geometry.
+    pub fn create_selection_vertex_buffer(&self) -> Buffer {
+        self.device.create_buffer(&BufferDescriptor {
+            label: Some("selection vertex buffer"),
+            size: Self::MAX_SELECTION_VERTICES * std::mem::size_of::<ColoredVertex>() as u64,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Build the vertices for selection border + handles.
+    /// Returns vertex data as a Vec (caller writes to pre-allocated buffer).
+    pub fn build_selection_vertices(
+        rect: &Rect,
+        surface_size: (u32, u32),
+    ) -> Vec<ColoredVertex> {
+        let sw = surface_size.0 as f32;
+        let sh = surface_size.1 as f32;
+        if sw <= 0.0 || sh <= 0.0 || rect.is_empty() {
+            return Vec::new();
+        }
+
+        // Convert pixel rect to NDC (clip space)
+        let l = rect.x as f32 / sw * 2.0 - 1.0;
+        let r = (rect.x + rect.w) as f32 / sw * 2.0 - 1.0;
+        let t = 1.0 - rect.y as f32 / sh * 2.0;
+        let b = 1.0 - (rect.y + rect.h) as f32 / sh * 2.0;
+
+        let border_color: [f32; 4] = [0.27, 0.53, 0.87, 1.0]; // KDE blue
+        let handle_color: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // white
+
+        let mut vertices: Vec<ColoredVertex> = Vec::with_capacity(72);
+
+        // Border: 4 rectangles (top, bottom, left, right), 2px wide
+        let bw = 2.0 / sw * 2.0; // border width in NDC
+        let bh = 2.0 / sh * 2.0;
+
+        // Top border
+        vertices.extend_from_slice(&quad(l - bw, t, r + bw, t + bh, border_color));
+        // Bottom border
+        vertices.extend_from_slice(&quad(l - bw, b - bh, r + bw, b, border_color));
+        // Left border
+        vertices.extend_from_slice(&quad(l - bw, t + bh, l, b - bh, border_color));
+        // Right border
+        vertices.extend_from_slice(&quad(r, t + bh, r + bw, b - bh, border_color));
+
+        // 8 handles: 6x6 pixel squares
+        let hs = 3.0; // half-size in pixels
+        let hsx = hs / sw * 2.0;
+        let hsy = hs / sh * 2.0;
+
+        let mx = (l + r) / 2.0;
+        let my = (t + b) / 2.0;
+
+        let handles = [
+            (l, t), (mx, t), (r, t),
+            (l, my), (r, my),
+            (l, b), (mx, b), (r, b),
+        ];
+
+        for (hx, hy) in &handles {
+            vertices.extend_from_slice(&quad(
+                hx - hsx, hy - hsy, hx + hsx, hy + hsy,
+                handle_color,
+            ));
+        }
+
+        vertices
+    }
+
+    /// Render a single frame: screenshot with selection dimming + handles/border.
     pub fn render(
         &self,
         surface: &Surface,
         config: &SurfaceConfiguration,
         bg_bind_group: &BindGroup,
+        selection_bind_group: &BindGroup,
+        selection_vertex_buffer: Option<(&Buffer, u32)>,
     ) -> Result<()> {
         let output = match surface.get_current_texture() {
             CurrentSurfaceTexture::Success(t) | CurrentSurfaceTexture::Suboptimal(t) => t,
             CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => {
-                // Skip this frame, try again later.
                 return Ok(());
             }
             CurrentSurfaceTexture::Outdated => {
-                // Reconfigure and skip.
                 surface.configure(&self.device, config);
                 return Ok(());
             }
@@ -282,7 +456,7 @@ impl Gpu {
             label: Some("overlay render"),
         });
 
-        // Pass 1: draw screenshot
+        // Pass 1: draw screenshot with selection-aware dimming
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("screenshot pass"),
@@ -299,11 +473,46 @@ impl Gpu {
             });
             pass.set_pipeline(&self.screenshot_pipeline);
             pass.set_bind_group(0, bg_bind_group, &[]);
+            pass.set_bind_group(1, selection_bind_group, &[]);
             pass.draw(0..3, 0..1);
+        }
+
+        // Pass 2: draw selection handles and border
+        if let Some((vbuf, count)) = selection_vertex_buffer {
+            if count > 0 {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("handles pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.handles_pipeline);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..count, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         Ok(())
     }
+}
+
+/// Build 6 vertices (2 triangles) for a filled rectangle.
+fn quad(l: f32, t: f32, r: f32, b: f32, color: [f32; 4]) -> [ColoredVertex; 6] {
+    [
+        ColoredVertex { position: [l, t], color },
+        ColoredVertex { position: [r, t], color },
+        ColoredVertex { position: [l, b], color },
+        ColoredVertex { position: [l, b], color },
+        ColoredVertex { position: [r, t], color },
+        ColoredVertex { position: [r, b], color },
+    ]
 }

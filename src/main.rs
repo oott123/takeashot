@@ -1,8 +1,10 @@
 mod app;
 mod capture;
+mod geom;
 mod hotkey;
 mod kwin;
 mod overlay;
+mod selection;
 mod single_instance;
 
 use anyhow::Result;

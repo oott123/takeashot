@@ -1,11 +1,12 @@
 pub mod renderer;
 
 use anyhow::{Context, Result};
-use renderer::Gpu;
+use renderer::{Gpu, SelectionUniform};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
+use smithay_client_toolkit::seat::pointer::{PointerHandler, ThemedPointer};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -14,19 +15,23 @@ use smithay_client_toolkit::shell::wlr_layer::{
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
 };
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 
 use crate::capture;
 use crate::capture::CapturedScreen;
+use crate::geom::Rect;
+use crate::selection::{CursorShape, SelectionState};
 
 struct OutputOverlay {
     layer: LayerSurface,
     output_name: Option<String>,
+    /// Logical position of this output in the global compositor space.
+    output_pos: (i32, i32),
     width: u32,
     height: u32,
     scale_factor: i32,
@@ -34,6 +39,10 @@ struct OutputOverlay {
     wgpu_surface: Option<wgpu::Surface<'static>>,
     bg_bind_group: Option<wgpu::BindGroup>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
+    selection_buffer: Option<wgpu::Buffer>,
+    selection_bind_group: Option<wgpu::BindGroup>,
+    /// Pre-allocated vertex buffer for selection geometry (handles + border).
+    selection_vbuf: Option<wgpu::Buffer>,
 }
 
 struct OverlayState {
@@ -44,11 +53,17 @@ struct OverlayState {
     layer_shell: LayerShell,
     shm_state: Shm,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    themed_pointer: Option<ThemedPointer>,
     overlays: Vec<OutputOverlay>,
     gpu: Gpu,
     captured: Vec<CapturedScreen>,
     exit_requested: bool,
     display_ptr: *mut std::ffi::c_void,
+    selection: SelectionState,
+    /// Current cursor shape (to avoid redundant set_cursor calls).
+    current_cursor: Option<CursorShape>,
+    /// Whether the display needs re-rendering (selection changed, etc.)
+    dirty: bool,
 }
 
 delegate_compositor!(OverlayState);
@@ -56,6 +71,7 @@ delegate_output!(OverlayState);
 delegate_layer!(OverlayState);
 delegate_seat!(OverlayState);
 delegate_keyboard!(OverlayState);
+delegate_pointer!(OverlayState);
 delegate_registry!(OverlayState);
 delegate_shm!(OverlayState);
 
@@ -67,15 +83,16 @@ impl OverlayState {
         let outputs: Vec<_> = self.output_state.outputs().collect();
         if outputs.is_empty() {
             tracing::warn!("no outputs found, creating overlay without output target");
-            self.create_layer_surface(qh, None, None);
+            self.create_layer_surface(qh, None, None, (0, 0));
             return;
         }
         for output in &outputs {
             let info = self.output_state.info(output);
             let name = info.as_ref().and_then(|i| i.name.clone());
-            let size = info.and_then(|i| i.logical_size).unwrap_or((1920, 1080));
-            tracing::info!("creating overlay for output '{name:?}': {size:?}");
-            self.create_layer_surface(qh, Some(output), name);
+            let size = info.as_ref().and_then(|i| i.logical_size).unwrap_or((1920, 1080));
+            let pos = info.as_ref().and_then(|i| i.logical_position).unwrap_or((0, 0));
+            tracing::info!("creating overlay for output '{name:?}': {size:?} at {pos:?}");
+            self.create_layer_surface(qh, Some(output), name, pos);
         }
     }
 
@@ -84,6 +101,7 @@ impl OverlayState {
         qh: &QueueHandle<Self>,
         output: Option<&wl_output::WlOutput>,
         output_name: Option<String>,
+        output_pos: (i32, i32),
     ) {
         let surface = self.compositor.create_surface(qh);
         let layer = self.layer_shell.create_layer_surface(
@@ -93,7 +111,6 @@ impl OverlayState {
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
 
-        // Determine initial scale factor from output info.
         let scale = output
             .and_then(|o| self.output_state.info(o))
             .map(|info| info.scale_factor)
@@ -102,31 +119,122 @@ impl OverlayState {
 
         layer.commit();
         self.overlays.push(OutputOverlay {
-            layer, output_name, width: 0, height: 0, scale_factor: scale,
+            layer, output_name, output_pos, width: 0, height: 0, scale_factor: scale,
             configured: false,
             wgpu_surface: None, bg_bind_group: None, surface_config: None,
+            selection_buffer: None, selection_bind_group: None,
+            selection_vbuf: None,
         });
         tracing::info!("layer surface created and committed (scale={scale})");
     }
 
     fn find_captured(&self, output_name: &Option<String>) -> Option<&CapturedScreen> {
-        // Try to match by output name first
         if let Some(name) = output_name {
             if let Some(cap) = self.captured.iter().find(|c| &c.name == name) {
                 return Some(cap);
             }
         }
-        // Fallback: use first captured screen
         self.captured.first()
     }
 
+    fn global_selection_rect(&self) -> Option<Rect> {
+        self.selection.selection.rect().copied()
+    }
+
+    /// Update selection uniform buffers + vertex buffers, then render all overlays.
     fn render_all(&mut self) {
-        for overlay in &mut self.overlays {
+        let global_rect = self.global_selection_rect();
+
+        // Pre-compute local selection rects and overlay metadata (avoid borrow conflicts)
+        let local_data: Vec<(Option<Rect>, u32, u32)> = self.overlays.iter().map(|o| {
+            let local = match &global_rect {
+                Some(gr) => {
+                    let local = gr.translate(-o.output_pos.0, -o.output_pos.1);
+                    let bounds = Rect::new(0, 0, o.width as i32, o.height as i32);
+                    local.intersect(&bounds)
+                }
+                None => None,
+            };
+            (local, o.width, o.height)
+        }).collect();
+
+        for (idx, overlay) in self.overlays.iter_mut().enumerate() {
             if !overlay.configured { continue; }
-            if let (Some(surface), Some(config), Some(bg)) = (&overlay.wgpu_surface, &overlay.surface_config, &overlay.bg_bind_group) {
-                if let Err(e) = self.gpu.render(surface, config, bg) {
+
+            // Ensure selection buffers exist
+            if overlay.selection_buffer.is_none() {
+                overlay.selection_buffer = Some(self.gpu.create_selection_buffer());
+                overlay.selection_bind_group = Some(
+                    self.gpu.create_selection_bind_group(overlay.selection_buffer.as_ref().unwrap())
+                );
+            }
+            if overlay.selection_vbuf.is_none() {
+                overlay.selection_vbuf = Some(self.gpu.create_selection_vertex_buffer());
+            }
+
+            // Update selection uniform
+            let uniform = match global_rect {
+                Some(_) => match local_data[idx].0 {
+                    Some(r) => SelectionUniform::from_rect(&r, (local_data[idx].1, local_data[idx].2)),
+                    None => SelectionUniform::none(),
+                },
+                None => SelectionUniform::none(),
+            };
+            self.gpu.queue.write_buffer(
+                overlay.selection_buffer.as_ref().unwrap(), 0,
+                bytemuck::bytes_of(&uniform),
+            );
+
+            // Update selection vertex buffer
+            let verts = match local_data[idx].0 {
+                Some(r) => Gpu::build_selection_vertices(&r, (local_data[idx].1, local_data[idx].2)),
+                None => Vec::new(),
+            };
+            let vert_count = verts.len() as u32;
+            if !verts.is_empty() {
+                self.gpu.queue.write_buffer(
+                    overlay.selection_vbuf.as_ref().unwrap(), 0,
+                    bytemuck::cast_slice(&verts),
+                );
+            }
+
+            // Render
+            if let (Some(surface), Some(config), Some(bg), Some(sel_bg)) =
+                (&overlay.wgpu_surface, &overlay.surface_config, &overlay.bg_bind_group, &overlay.selection_bind_group)
+            {
+                let sel_verts = if vert_count > 0 {
+                    Some((overlay.selection_vbuf.as_ref().unwrap(), vert_count))
+                } else {
+                    None
+                };
+                if let Err(e) = self.gpu.render(surface, config, bg, sel_bg, sel_verts) {
                     tracing::warn!("render failed: {e}");
                 }
+            }
+        }
+
+        self.dirty = false;
+    }
+
+    /// Update cursor shape based on selection state + pointer position.
+    fn update_cursor(&mut self, conn: &Connection, pos: (f64, f64)) {
+        let shape = self.selection.cursor_for_position(pos);
+        if self.current_cursor == Some(shape) {
+            return;
+        }
+        self.current_cursor = Some(shape);
+
+        if let Some(tp) = &self.themed_pointer {
+            let icon = match shape {
+                CursorShape::Crosshair => smithay_client_toolkit::seat::pointer::CursorIcon::Crosshair,
+                CursorShape::Move => smithay_client_toolkit::seat::pointer::CursorIcon::Move,
+                CursorShape::ResizeNWSE => smithay_client_toolkit::seat::pointer::CursorIcon::NwseResize,
+                CursorShape::ResizeNESW => smithay_client_toolkit::seat::pointer::CursorIcon::NeswResize,
+                CursorShape::ResizeNS => smithay_client_toolkit::seat::pointer::CursorIcon::NsResize,
+                CursorShape::ResizeEW => smithay_client_toolkit::seat::pointer::CursorIcon::EwResize,
+            };
+            if let Err(e) = tp.set_cursor(conn, icon) {
+                tracing::debug!("set_cursor failed: {e}");
             }
         }
     }
@@ -141,7 +249,11 @@ impl CompositorHandler for OverlayState {
         }
     }
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) { self.render_all(); }
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
+        if self.dirty {
+            self.render_all();
+        }
+    }
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
 }
@@ -164,7 +276,6 @@ impl LayerShellHandler for OverlayState {
         tracing::info!("layer surface configure: {w}x{h}");
         if w == 0 || h == 0 { return; }
 
-        // Find the index of the matching overlay
         let idx = match self.overlays.iter().position(|o| o.layer.wl_surface() == layer.wl_surface()) {
             Some(i) => i,
             None => return,
@@ -174,7 +285,6 @@ impl LayerShellHandler for OverlayState {
         let needs_init = self.overlays[idx].wgpu_surface.is_none();
         let scale = self.overlays[idx].scale_factor.max(1);
 
-        // Physical (buffer) size = logical size × scale factor
         let phys_w = w * scale as u32;
         let phys_h = h * scale as u32;
 
@@ -210,7 +320,6 @@ impl LayerShellHandler for OverlayState {
             };
             wgpu_surf.configure(&self.gpu.device, &config);
 
-            // Find the captured screen matching this output's name
             let cap = self.find_captured(&output_name);
             let bg_bind_group = match cap {
                 Some(cap) => {
@@ -224,9 +333,17 @@ impl LayerShellHandler for OverlayState {
                 }
             };
 
+            let sel_buf = self.gpu.create_selection_buffer();
+            let sel_bg = self.gpu.create_selection_bind_group(&sel_buf);
+            self.gpu.queue.write_buffer(&sel_buf, 0, bytemuck::bytes_of(&SelectionUniform::none()));
+            let sel_vbuf = self.gpu.create_selection_vertex_buffer();
+
             self.overlays[idx].wgpu_surface = Some(wgpu_surf);
             self.overlays[idx].bg_bind_group = Some(bg_bind_group);
             self.overlays[idx].surface_config = Some(config);
+            self.overlays[idx].selection_buffer = Some(sel_buf);
+            self.overlays[idx].selection_bind_group = Some(sel_bg);
+            self.overlays[idx].selection_vbuf = Some(sel_vbuf);
         } else if self.overlays[idx].wgpu_surface.is_some() && self.overlays[idx].surface_config.is_some() {
             self.overlays[idx].surface_config.as_mut().unwrap().width = phys_w;
             self.overlays[idx].surface_config.as_mut().unwrap().height = phys_h;
@@ -235,31 +352,84 @@ impl LayerShellHandler for OverlayState {
             surf.configure(&self.gpu.device, config);
         }
 
-        if let (Some(surface), Some(config), Some(bg)) = (&self.overlays[idx].wgpu_surface, &self.overlays[idx].surface_config, &self.overlays[idx].bg_bind_group) {
-            if let Err(e) = self.gpu.render(surface, config, bg) {
-                tracing::warn!("initial render failed: {e}");
-            } else {
-                tracing::info!("initial render succeeded");
-            }
-        }
+        self.dirty = true;
+        // Render immediately for configure events (initial setup)
+        self.render_all();
     }
 }
 
 impl SeatHandler for OverlayState {
     fn seat_state(&mut self) -> &mut SeatState { &mut self.seat_state }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
-    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, cap: Capability) {
+    fn new_capability(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, cap: Capability) {
         if cap == Capability::Keyboard && self.keyboard.is_none() {
             match self.seat_state.get_keyboard(qh, &seat, None) {
                 Ok(kb) => { tracing::info!("keyboard attached"); self.keyboard = Some(kb); }
                 Err(e) => tracing::warn!("failed to get keyboard: {e}"),
             }
         }
+        if cap == Capability::Pointer && self.themed_pointer.is_none() {
+            let cursor_surface = self.overlays.first()
+                .map(|o| o.layer.wl_surface().clone())
+                .unwrap_or_else(|| self.compositor.create_surface(qh));
+
+            match self.seat_state.get_pointer_with_theme(
+                qh, &seat, self.shm_state.wl_shm(), cursor_surface,
+                smithay_client_toolkit::seat::pointer::ThemeSpec::default(),
+            ) {
+                Ok(tp) => {
+                    tracing::info!("pointer attached with theme");
+                    self.themed_pointer = Some(tp);
+                }
+                Err(e) => tracing::warn!("failed to get themed pointer: {e}"),
+            }
+        }
     }
     fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, cap: Capability) {
         if cap == Capability::Keyboard { self.keyboard = None; }
+        if cap == Capability::Pointer { self.themed_pointer = None; }
     }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl PointerHandler for OverlayState {
+    fn pointer_frame(
+        &mut self,
+        conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
+    ) {
+        use smithay_client_toolkit::seat::pointer::PointerEventKind;
+
+        for event in events {
+            let (x, y) = event.position;
+
+            let global_pos = self.overlays.iter()
+                .find(|o| o.layer.wl_surface() == &event.surface)
+                .map(|o| (x + o.output_pos.0 as f64, y + o.output_pos.1 as f64))
+                .unwrap_or((x, y));
+
+            match &event.kind {
+                PointerEventKind::Press { button, .. } => {
+                    self.selection.on_pointer_press(global_pos, *button);
+                }
+                PointerEventKind::Release { button, .. } => {
+                    self.selection.on_pointer_release(global_pos, *button);
+                }
+                PointerEventKind::Motion { .. } => {
+                    self.selection.on_pointer_motion(global_pos);
+                }
+                PointerEventKind::Enter { .. } | PointerEventKind::Leave { .. } => {}
+                PointerEventKind::Axis { .. } => {}
+            }
+
+            self.update_cursor(conn, global_pos);
+        }
+
+        // Just mark dirty — the main loop or frame callback will render
+        self.dirty = true;
+    }
 }
 
 impl KeyboardHandler for OverlayState {
@@ -267,8 +437,20 @@ impl KeyboardHandler for OverlayState {
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {}
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
         if event.keysym == Keysym::Escape {
-            tracing::info!("Esc pressed, exiting overlay");
-            self.exit_requested = true;
+            if self.selection.on_escape() {
+                tracing::info!("Esc pressed, exiting overlay");
+                self.exit_requested = true;
+            } else {
+                tracing::info!("Esc pressed, selection cleared");
+                self.dirty = true;
+            }
+        } else if event.keysym == Keysym::Return {
+            match self.selection.on_enter() {
+                crate::selection::ConfirmAction::Confirmed { rect } => {
+                    tracing::info!("Enter pressed, selection confirmed: {rect:?}");
+                }
+                crate::selection::ConfirmAction::NoSelection => {}
+            }
         }
     }
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
@@ -286,20 +468,16 @@ impl ProvidesRegistryState for OverlayState {
     fn runtime_remove_global(&mut self, _: &Connection, _: &QueueHandle<Self>, _: u32, _: &str) {}
 }
 
-/// Extract the raw wl_display pointer from a Wayland Connection.
 fn get_display_ptr(conn: &Connection) -> *mut std::ffi::c_void {
     conn.backend().display_ptr() as *mut std::ffi::c_void
 }
 
 /// Run the overlay event loop. Blocks until Esc is pressed or compositor closes.
-///
-/// The D-Bus connection is used for per-screen KWin captures after outputs are enumerated.
 pub fn run(dbus_conn: zbus::Connection) -> Result<()> {
     run_inner(dbus_conn, None)
 }
 
 /// Run the overlay event loop with an auto-exit timeout.
-/// After `timeout` elapses, the overlay closes automatically.
 pub fn run_with_timeout(
     dbus_conn: zbus::Connection,
     timeout: std::time::Duration,
@@ -327,17 +505,17 @@ fn run_inner(
     let mut state = OverlayState {
         registry_state: RegistryState::new(&globals),
         compositor, output_state, seat_state, layer_shell, shm_state: shm,
-        keyboard: None, overlays: Vec::new(), gpu, captured: Vec::new(), exit_requested: false,
-        display_ptr,
+        keyboard: None, themed_pointer: None, overlays: Vec::new(), gpu, captured: Vec::new(),
+        exit_requested: false, display_ptr,
+        selection: SelectionState::new(),
+        current_cursor: None,
+        dirty: false,
     };
 
-    // Roundtrip to receive output geometry/mode info before creating overlays.
     event_queue.flush()?;
     let rounds = conn.roundtrip()?;
     tracing::info!("initial roundtrip for output info ({rounds} rounds)");
 
-    // The xdg_output name events may arrive after the initial wl_output done.
-    // Use blocking_dispatch which also processes SCTK callbacks.
     let mut output_names: Vec<String> = Vec::new();
     for attempt in 0..5 {
         output_names = state.output_state.outputs()
@@ -352,7 +530,6 @@ fn run_inner(
     }
     tracing::info!("detected outputs: {output_names:?}");
 
-    // Per-screen capture via KWin D-Bus.
     state.captured = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(
             capture::capture_all(&dbus_conn, &output_names)
@@ -361,8 +538,6 @@ fn run_inner(
 
     state.create_overlays(&qh);
 
-    // Second roundtrip: compositor processes layer surface creation and
-    // sends configure events with actual surface dimensions.
     event_queue.flush()?;
     let rounds = conn.roundtrip()?;
     tracing::info!("second roundtrip for configure events ({rounds} rounds)");
@@ -381,7 +556,6 @@ fn run_inner(
                 tracing::info!("smoke timeout reached, exiting");
                 break;
             }
-            // Non-blocking dispatch + poll with remaining timeout
             event_queue.dispatch_pending(&mut state)?;
             event_queue.flush()?;
 
@@ -395,16 +569,19 @@ fn run_inner(
                     revents: 0,
                 };
                 let ms = remaining.as_millis() as i32;
-                // SAFETY: poll() on a single fd with timeout
                 unsafe { libc::poll(&mut pfd, 1, ms); }
             }
-            // Read and dispatch what arrived
             if let Some(guard) = conn.prepare_read() {
                 let _ = guard.read();
             }
             event_queue.dispatch_pending(&mut state)?;
         } else {
             event_queue.blocking_dispatch(&mut state)?;
+        }
+
+        // Render after processing events, if anything changed
+        if state.dirty {
+            state.render_all();
         }
     }
 
