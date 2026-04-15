@@ -302,25 +302,6 @@ impl Gpu {
             pass.draw(0..3, 0..1);
         }
 
-        // Pass 2: draw semi-transparent dark overlay
-        {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("overlay pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.overlay_pipeline);
-            pass.draw(0..3, 0..1);
-        }
-
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         Ok(())

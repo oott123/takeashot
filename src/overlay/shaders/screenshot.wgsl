@@ -27,5 +27,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
-    return textureSample(tex, samp, in.uv);
+    let color = textureSample(tex, samp, in.uv);
+    // Dim the screenshot to ~50% brightness, force opaque.
+    return vec4(color.rgb * 0.5, 1.0);
 }
