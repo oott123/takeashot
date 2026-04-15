@@ -540,6 +540,22 @@ fn run_inner(
 
     state.create_overlays(&qh);
 
+    // Compute total screen bounds from overlay positions + logical sizes
+    let bounds: Option<Rect> = state.output_state.outputs()
+        .filter_map(|o| state.output_state.info(&o))
+        .filter_map(|info| {
+            let (x, y) = info.logical_position.unwrap_or((0, 0));
+            let (w, h) = info.logical_size.unwrap_or((1920, 1080));
+            Some(Rect::new(x, y, w as i32, h as i32))
+        })
+        .reduce(|a, r| Rect::new(
+            a.x.min(r.x), a.y.min(r.y),
+            a.right().max(r.right()) - a.x.min(r.x),
+            a.bottom().max(r.bottom()) - a.y.min(r.y),
+        ));
+    state.selection.bounds = bounds;
+    tracing::info!("selection bounds: {bounds:?}");
+
     event_queue.flush()?;
     let rounds = conn.roundtrip()?;
     tracing::info!("second roundtrip for configure events ({rounds} rounds)");

@@ -61,6 +61,8 @@ pub struct SelectionState {
     last_pointer: Option<(f64, f64)>,
     drag_start_rect: Option<Rect>,
     drag_start_pos: Option<(f64, f64)>,
+    /// Total screen bounds (union of all outputs). Used to clamp selection on move.
+    pub bounds: Option<Rect>,
 }
 
 /// Result of a confirm action (Enter key or double-click).
@@ -80,6 +82,7 @@ impl SelectionState {
             last_pointer: None,
             drag_start_rect: None,
             drag_start_pos: None,
+            bounds: None,
         }
     }
 
@@ -251,8 +254,23 @@ impl SelectionState {
                 }
             }
             Some(DragOp::Moving) => {
+                // Pre-compute clamped rect to avoid borrow conflict
+                let bounds = self.bounds;
+                let cur = match &self.selection {
+                    Selection::Confirmed { rect } => *rect,
+                    _ => { self.last_pointer = Some(pos); return; }
+                };
+                let moved = cur.translate(dx, dy);
+                let clamped = match bounds {
+                    Some(b) => {
+                        let x = moved.x.clamp(b.x, (b.right() - moved.w).max(b.x));
+                        let y = moved.y.clamp(b.y, (b.bottom() - moved.h).max(b.y));
+                        Rect { x, y, w: moved.w, h: moved.h }
+                    }
+                    None => moved,
+                };
                 if let Selection::Confirmed { rect } = &mut self.selection {
-                    *rect = rect.translate(dx, dy);
+                    *rect = clamped;
                 }
             }
             Some(DragOp::Resizing(handle)) | Some(DragOp::Extending(handle)) => {
@@ -436,6 +454,25 @@ mod tests {
         assert_eq!(s.selection, Selection::Confirmed {
             rect: Rect::new(110, 120, 200, 200)
         });
+    }
+
+    #[test]
+    fn move_clamped_by_bounds() {
+        let mut s = SelectionState::new();
+        s.bounds = Some(Rect::new(0, 0, 300, 300));
+        // 200x200 rect at (100,100), trying to move left past x=0
+        s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
+
+        s.on_pointer_press((150.0, 150.0), BTN_LEFT);
+        // Move 200px left — would put x at -100, but clamped to 0
+        s.on_pointer_motion((-50.0, 150.0));
+        match s.selection {
+            Selection::Confirmed { rect } => {
+                assert_eq!(rect.x, 0); // clamped
+                assert_eq!(rect.w, 200); // size preserved
+            }
+            _ => panic!("expected Confirmed"),
+        }
     }
 
     #[test]
