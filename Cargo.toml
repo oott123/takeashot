@@ -26,3 +26,9 @@ wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-sys = { version = "0.31", features = ["client"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+glam = "0.32.1"
+lyon = "1.0.19"
+lyon_path = "1.0.19"
+lyon_tessellation = "1.0.20"
+egui = "0.34.1"
+egui-wgpu = "0.34.1"

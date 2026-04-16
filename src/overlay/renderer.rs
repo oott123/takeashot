@@ -357,11 +357,24 @@ impl Gpu {
     /// 4 border quads × 6 + 8 handle quads × 6 = 72
     const MAX_SELECTION_VERTICES: u64 = 72;
 
+    /// Maximum vertices for annotation geometry (dynamic, pre-allocated).
+    pub const MAX_ANNOTATION_VERTICES: u64 = 65536;
+
     /// Create a pre-allocated vertex buffer for selection geometry.
     pub fn create_selection_vertex_buffer(&self) -> Buffer {
         self.device.create_buffer(&BufferDescriptor {
             label: Some("selection vertex buffer"),
             size: Self::MAX_SELECTION_VERTICES * std::mem::size_of::<ColoredVertex>() as u64,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Create a pre-allocated vertex buffer for annotation geometry.
+    pub fn create_annotation_vertex_buffer(&self) -> Buffer {
+        self.device.create_buffer(&BufferDescriptor {
+            label: Some("annotation vertex buffer"),
+            size: Self::MAX_ANNOTATION_VERTICES * std::mem::size_of::<ColoredVertex>() as u64,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -427,31 +440,37 @@ impl Gpu {
         vertices
     }
 
-    /// Render a single frame: screenshot with selection dimming + handles/border.
-    pub fn render(
+    /// Acquire a surface texture and return it, without presenting.
+    /// Returns `None` if the surface is not ready (timeout, occluded, outdated).
+    pub fn acquire_surface_texture(
         &self,
         surface: &Surface,
         config: &SurfaceConfiguration,
-        bg_bind_group: &BindGroup,
-        selection_bind_group: &BindGroup,
-        selection_vertex_buffer: Option<(&Buffer, u32)>,
-    ) -> Result<()> {
-        let output = match surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(t) | CurrentSurfaceTexture::Suboptimal(t) => t,
-            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => {
-                return Ok(());
-            }
+    ) -> Result<Option<SurfaceTexture>> {
+        match surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(t) | CurrentSurfaceTexture::Suboptimal(t) => Ok(Some(t)),
+            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => Ok(None),
             CurrentSurfaceTexture::Outdated => {
                 surface.configure(&self.device, config);
-                return Ok(());
+                Ok(None)
             }
             CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Validation => {
                 anyhow::bail!("surface lost or validation error");
             }
-        };
+        }
+    }
 
-        let view = output.texture.create_view(&TextureViewDescriptor::default());
-
+    /// Render passes into an existing texture view (does NOT acquire or present the surface).
+    /// Caller is responsible for acquiring the surface texture and presenting it.
+    pub fn render_into(
+        &self,
+        view: &TextureView,
+        bg_bind_group: &BindGroup,
+        selection_bind_group: &BindGroup,
+        selection_vertex_buffer: Option<(&Buffer, u32)>,
+        annotation_vertex_buffer: Option<(&Buffer, u32)>,
+        scissor_rect: Option<(u32, u32, u32, u32)>,
+    ) {
         let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("overlay render"),
         });
@@ -461,7 +480,7 @@ impl Gpu {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("screenshot pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store },
@@ -477,13 +496,38 @@ impl Gpu {
             pass.draw(0..3, 0..1);
         }
 
-        // Pass 2: draw selection handles and border
+        // Pass 2: draw annotations (with scissor rect for selection clipping)
+        if let Some((vbuf, count)) = annotation_vertex_buffer {
+            if count > 0 {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("annotation pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                if let Some((x, y, w, h)) = scissor_rect {
+                    pass.set_scissor_rect(x, y, w, h);
+                }
+                pass.set_pipeline(&self.handles_pipeline);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..count, 0..1);
+            }
+        }
+
+        // Pass 3: draw selection handles and border
         if let Some((vbuf, count)) = selection_vertex_buffer {
             if count > 0 {
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("handles pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
-                        view: &view,
+                        view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
@@ -500,8 +544,6 @@ impl Gpu {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-        Ok(())
     }
 }
 

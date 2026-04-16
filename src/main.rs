@@ -1,3 +1,4 @@
+mod annotation;
 mod app;
 mod capture;
 mod geom;
@@ -6,6 +7,7 @@ mod kwin;
 mod overlay;
 mod selection;
 mod single_instance;
+mod ui;
 
 use anyhow::Result;
 

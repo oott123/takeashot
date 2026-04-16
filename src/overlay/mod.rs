@@ -22,10 +22,14 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 
+use crate::annotation::AnnotationState;
+use crate::annotation::AnnotationAction;
 use crate::capture;
 use crate::capture::CapturedScreen;
 use crate::geom::Rect;
 use crate::selection::{CursorShape, SelectionState};
+use crate::ui::toolbar::Tool;
+use crate::ui::EguiState;
 
 struct OutputOverlay {
     layer: LayerSurface,
@@ -43,6 +47,19 @@ struct OutputOverlay {
     selection_bind_group: Option<wgpu::BindGroup>,
     /// Pre-allocated vertex buffer for selection geometry (handles + border).
     selection_vbuf: Option<wgpu::Buffer>,
+    /// Pre-allocated vertex buffer for annotation geometry.
+    annotation_vbuf: Option<wgpu::Buffer>,
+}
+
+/// Which subsystem owns the current pointer drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerOwner {
+    /// No drag in progress — next Press decides ownership.
+    None,
+    /// egui (toolbar) owns the drag.
+    Egui,
+    /// Selection/annotation system owns the drag.
+    Overlay,
 }
 
 struct OverlayState {
@@ -64,6 +81,14 @@ struct OverlayState {
     current_cursor: Option<CursorShape>,
     /// Whether the display needs re-rendering (selection changed, etc.)
     dirty: bool,
+    /// Annotation state (shapes, drawing, editing).
+    annotations: AnnotationState,
+    /// Currently active tool.
+    tool: Tool,
+    /// Egui state for toolbar rendering.
+    egui: EguiState,
+    /// Which subsystem owns the current pointer drag.
+    pointer_owner: PointerOwner,
 }
 
 delegate_compositor!(OverlayState);
@@ -123,7 +148,7 @@ impl OverlayState {
             configured: false,
             wgpu_surface: None, bg_bind_group: None, surface_config: None,
             selection_buffer: None, selection_bind_group: None,
-            selection_vbuf: None,
+            selection_vbuf: None, annotation_vbuf: None,
         });
         tracing::info!("layer surface created and committed (scale={scale})");
     }
@@ -141,12 +166,75 @@ impl OverlayState {
         self.selection.selection.rect().copied()
     }
 
+    /// Compute the toolbar bounding rect in global logical coordinates.
+    /// Uses the same positioning logic as render_all().
+    fn compute_toolbar_rect(&self) -> Option<Rect> {
+        let global_rect = self.global_selection_rect()?;
+        // Find the output that contains the toolbar's preferred position
+        let tb_x = (global_rect.right() - 360).max(0);
+        let tb_y = global_rect.bottom() + 4;
+        let overlay = self.overlays.iter().find(|o| {
+            tb_x >= o.output_pos.0 && tb_x < o.output_pos.0 + o.width as i32 &&
+            tb_y >= o.output_pos.1 && tb_y < o.output_pos.1 + o.height as i32
+        })?;
+        crate::ui::toolbar::toolbar_rect(
+            Some(global_rect),
+            overlay.output_pos,
+            (overlay.width, overlay.height),
+        )
+    }
+
     /// Update selection uniform buffers + vertex buffers, then render all overlays.
     fn render_all(&mut self) {
+        // Determine which output should display the toolbar.
+        // The toolbar is positioned below-right of the selection, so find the output
+        // that contains the toolbar's preferred position.
         let global_rect = self.global_selection_rect();
+        let toolbar_output_idx = global_rect.and_then(|sel| {
+            let tb_x = (sel.right() - 360).max(0);
+            let tb_y = sel.bottom() + 4;
+            self.overlays.iter().position(|o| {
+                tb_x >= o.output_pos.0 && tb_x < o.output_pos.0 + o.width as i32 &&
+                tb_y >= o.output_pos.1 && tb_y < o.output_pos.1 + o.height as i32
+            })
+        });
+
+        // Get the toolbar output's parameters for egui
+        let (tb_output_pos, tb_output_size, tb_scale) = toolbar_output_idx
+            .and_then(|idx| self.overlays.get(idx))
+            .map(|o| (o.output_pos, (o.width, o.height), o.scale_factor))
+            .unwrap_or_else(|| {
+                // Fallback: use first configured output
+                self.overlays.iter()
+                    .find(|o| o.configured)
+                    .map(|o| (o.output_pos, (o.width, o.height), o.scale_factor))
+                    .unwrap_or(((0, 0), (0, 0), 1))
+            });
+
+        // Initialize egui renderer if needed
+        self.egui.init_renderer(&self.gpu.device, wgpu::TextureFormat::Bgra8UnormSrgb);
+        self.egui.set_pixels_per_point(tb_scale.max(1) as f32);
+
+        if let Some(new_tool) = self.egui.run_ui(
+            &self.gpu.device,
+            &self.gpu.queue,
+            self.tool,
+            global_rect,
+            tb_output_pos,
+            tb_output_size,
+        ) {
+            if new_tool != self.tool {
+                tracing::info!("tool changed: {:?} → {:?}", self.tool, new_tool);
+                // Deselect annotation when switching away from AnnotationEdit
+                if matches!(self.tool, Tool::AnnotationEdit) {
+                    self.annotations.deselect_all();
+                }
+                self.tool = new_tool;
+            }
+        }
 
         // Pre-compute local selection rects and overlay metadata (avoid borrow conflicts)
-        let local_data: Vec<(Option<Rect>, u32, u32)> = self.overlays.iter().map(|o| {
+        let local_data: Vec<(Option<Rect>, u32, u32, i32, (i32, i32))> = self.overlays.iter().map(|o| {
             let local = match &global_rect {
                 Some(gr) => {
                     let local = gr.translate(-o.output_pos.0, -o.output_pos.1);
@@ -155,8 +243,15 @@ impl OverlayState {
                 }
                 None => None,
             };
-            (local, o.width, o.height)
+            (local, o.width, o.height, o.scale_factor, o.output_pos)
         }).collect();
+
+        // Compute annotation vertex data per output
+        let annotations = &self.annotations;
+        let drawing_shape = annotations.drawing_shape();
+        let drawing_transform = annotations.drawing_transform();
+        let edit_handles = annotations.edit_handles();
+        let selected_idx = annotations.selected_index();
 
         for (idx, overlay) in self.overlays.iter_mut().enumerate() {
             if !overlay.configured { continue; }
@@ -170,6 +265,9 @@ impl OverlayState {
             }
             if overlay.selection_vbuf.is_none() {
                 overlay.selection_vbuf = Some(self.gpu.create_selection_vertex_buffer());
+            }
+            if overlay.annotation_vbuf.is_none() {
+                overlay.annotation_vbuf = Some(self.gpu.create_annotation_vertex_buffer());
             }
 
             // Update selection uniform
@@ -198,6 +296,55 @@ impl OverlayState {
                 );
             }
 
+            // Tessellate annotations for this output
+            let scale = local_data[idx].3;
+            let output_rect = Rect::new(
+                local_data[idx].4 .0,
+                local_data[idx].4 .1,
+                local_data[idx].1 as i32,
+                local_data[idx].2 as i32,
+            );
+            let phys_w = local_data[idx].1 * scale.max(1) as u32;
+            let phys_h = local_data[idx].2 * scale.max(1) as u32;
+
+            let ann_verts = crate::annotation::render::tessellate_annotations(
+                annotations.annotations(),
+                drawing_shape,
+                drawing_transform,
+                None, // drawing_color
+                if selected_idx.is_some() { &edit_handles } else { &[] },
+                global_rect,
+                output_rect,
+                scale,
+                (phys_w, phys_h),
+            );
+            let ann_vert_count = ann_verts.len() as u32;
+            let max_ann_verts = renderer::Gpu::MAX_ANNOTATION_VERTICES as u32;
+            if ann_vert_count > max_ann_verts {
+                tracing::warn!("annotation vertex count ({ann_vert_count}) exceeds buffer capacity ({max_ann_verts}), truncating");
+            }
+            let ann_vert_count = ann_vert_count.min(max_ann_verts);
+            if !ann_verts.is_empty() {
+                let bytes_to_write = ann_vert_count as usize * std::mem::size_of::<renderer::ColoredVertex>();
+                self.gpu.queue.write_buffer(
+                    overlay.annotation_vbuf.as_ref().unwrap(), 0,
+                    &bytemuck::cast_slice(&ann_verts)[..bytes_to_write],
+                );
+            }
+
+            // Compute scissor rect for annotation clipping (selection rect in physical pixels)
+            let scissor = match local_data[idx].0 {
+                Some(r) if r.x >= 0 && r.y >= 0 && r.w > 0 && r.h > 0 => {
+                    let sf = scale.max(1) as u32;
+                    let sx = r.x as u32 * sf;
+                    let sy = r.y as u32 * sf;
+                    let sw = r.w as u32 * sf;
+                    let sh = r.h as u32 * sf;
+                    Some((sx, sy, sw, sh))
+                }
+                _ => None,
+            };
+
             // Render
             if let (Some(surface), Some(config), Some(bg), Some(sel_bg)) =
                 (&overlay.wgpu_surface, &overlay.surface_config, &overlay.bg_bind_group, &overlay.selection_bind_group)
@@ -207,18 +354,57 @@ impl OverlayState {
                 } else {
                     None
                 };
-                if let Err(e) = self.gpu.render(surface, config, bg, sel_bg, sel_verts) {
-                    tracing::warn!("render failed: {e}");
+                let ann_verts_opt = if ann_vert_count > 0 {
+                    Some((overlay.annotation_vbuf.as_ref().unwrap(), ann_vert_count))
+                } else {
+                    None
+                };
+
+                // Acquire surface texture once
+                let st = match self.gpu.acquire_surface_texture(surface, config) {
+                    Ok(Some(st)) => st,
+                    Ok(None) => continue,
+                    Err(e) => { tracing::warn!("acquire surface failed: {e}"); continue; }
+                };
+                let view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                // Render main passes (screenshot + annotations + handles)
+                self.gpu.render_into(&view, bg, sel_bg, sel_verts, ann_verts_opt, scissor);
+
+                // Render egui toolbar on this output only if it's the toolbar output
+                if toolbar_output_idx == Some(idx) {
+                    self.egui.paint(&self.gpu.device, &self.gpu.queue, &view, (config.width, config.height));
                 }
+
+                st.present();
             }
         }
 
         self.dirty = false;
     }
 
-    /// Update cursor shape based on selection state + pointer position.
+    /// Update cursor shape based on tool + selection state + pointer position.
     fn update_cursor(&mut self, conn: &Connection, pos: (f64, f64)) {
-        let shape = self.selection.cursor_for_position(pos);
+        let shape = match self.tool {
+            Tool::Move => self.selection.cursor_for_position(pos),
+            Tool::AnnotationEdit => {
+                let sel_rect = self.selection.selection.rect();
+                self.annotations.cursor_for_position(pos, Tool::AnnotationEdit, sel_rect)
+                    .unwrap_or_else(|| self.selection.cursor_for_position(pos))
+            }
+            Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+                // Inside confirmed selection: crosshair; outside: let selection decide
+                let inside = self.selection.selection.rect().map_or(false, |r| {
+                    let p = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
+                    r.contains(p)
+                });
+                if inside && self.selection.selection.is_confirmed() {
+                    CursorShape::Crosshair
+                } else {
+                    self.selection.cursor_for_position(pos)
+                }
+            }
+        };
         if self.current_cursor == Some(shape) {
             return;
         }
@@ -235,6 +421,78 @@ impl OverlayState {
             };
             if let Err(e) = tp.set_cursor(conn, icon) {
                 tracing::debug!("set_cursor failed: {e}");
+            }
+        }
+    }
+
+    /// Tool-aware pointer press handler.
+    fn handle_pointer_press(&mut self, pos: (f64, f64), button: u32) {
+        let prev_had_selection = self.global_selection_rect().is_some();
+
+        match self.tool {
+            Tool::Move => {
+                if self.selection.on_pointer_press(pos, button) {
+                    self.exit_requested = true;
+                }
+            }
+            Tool::AnnotationEdit => {
+                let sel_rect = self.selection.selection.rect().copied();
+                let action = self.annotations.on_pointer_press(pos, button, Tool::AnnotationEdit, sel_rect);
+                if action == AnnotationAction::None {
+                    // Annotation didn't consume — fall through to selection
+                    if self.selection.on_pointer_press(pos, button) {
+                        self.exit_requested = true;
+                    }
+                }
+            }
+            Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+                // Check if pointer is inside confirmed selection
+                let inside = self.selection.selection.rect().map_or(false, |r| {
+                    let p = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
+                    r.contains(p)
+                });
+                if inside && self.selection.selection.is_confirmed() {
+                    let sel_rect = self.selection.selection.rect().copied();
+                    self.annotations.on_pointer_press(pos, button, self.tool, sel_rect);
+                } else {
+                    // Outside selection: route to selection (create/extend)
+                    if self.selection.on_pointer_press(pos, button) {
+                        self.exit_requested = true;
+                    }
+                }
+            }
+        }
+
+        // If selection was cancelled (e.g., right-click), clear annotations too
+        if prev_had_selection && self.global_selection_rect().is_none() {
+            self.annotations.clear();
+        }
+    }
+
+    /// Tool-aware pointer motion handler.
+    fn handle_pointer_motion(&mut self, pos: (f64, f64)) {
+        // Always forward to selection (it needs to track pointer for cursor)
+        self.selection.on_pointer_motion(pos);
+
+        // Also forward to annotations if drawing or editing
+        match self.tool {
+            Tool::Move => {}
+            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+                self.annotations.on_pointer_motion(pos);
+            }
+        }
+    }
+
+    /// Tool-aware pointer release handler.
+    fn handle_pointer_release(&mut self, pos: (f64, f64), button: u32) {
+        // Always forward to selection
+        self.selection.on_pointer_release(pos, button);
+
+        // Also forward to annotations if drawing or editing
+        match self.tool {
+            Tool::Move => {}
+            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+                self.annotations.on_pointer_release(pos, button);
             }
         }
     }
@@ -337,6 +595,7 @@ impl LayerShellHandler for OverlayState {
             let sel_bg = self.gpu.create_selection_bind_group(&sel_buf);
             self.gpu.queue.write_buffer(&sel_buf, 0, bytemuck::bytes_of(&SelectionUniform::none()));
             let sel_vbuf = self.gpu.create_selection_vertex_buffer();
+            let ann_vbuf = self.gpu.create_annotation_vertex_buffer();
 
             self.overlays[idx].wgpu_surface = Some(wgpu_surf);
             self.overlays[idx].bg_bind_group = Some(bg_bind_group);
@@ -344,6 +603,7 @@ impl LayerShellHandler for OverlayState {
             self.overlays[idx].selection_buffer = Some(sel_buf);
             self.overlays[idx].selection_bind_group = Some(sel_bg);
             self.overlays[idx].selection_vbuf = Some(sel_vbuf);
+            self.overlays[idx].annotation_vbuf = Some(ann_vbuf);
         } else if self.overlays[idx].wgpu_surface.is_some() && self.overlays[idx].surface_config.is_some() {
             self.overlays[idx].surface_config.as_mut().unwrap().width = phys_w;
             self.overlays[idx].surface_config.as_mut().unwrap().height = phys_h;
@@ -405,22 +665,65 @@ impl PointerHandler for OverlayState {
         for event in events {
             let (x, y) = event.position;
 
+            // Convert to global logical coords
             let global_pos = self.overlays.iter()
                 .find(|o| o.layer.wl_surface() == &event.surface)
                 .map(|o| (x + o.output_pos.0 as f64, y + o.output_pos.1 as f64))
                 .unwrap_or((x, y));
 
+            // Convert to per-output local coords for egui
+            let output = self.overlays.iter()
+                .find(|o| o.layer.wl_surface() == &event.surface);
+            let egui_pos = output
+                .map(|_| (x, y))
+                .unwrap_or(global_pos);
+
             match &event.kind {
                 PointerEventKind::Press { button, .. } => {
-                    if self.selection.on_pointer_press(global_pos, *button) {
-                        self.exit_requested = true;
+                    // Decide ownership on Press: if pointer is over toolbar → egui, else → overlay
+                    let over_toolbar = self.compute_toolbar_rect().map_or(false, |r| {
+                        let p = crate::geom::Point::new(global_pos.0 as i32, global_pos.1 as i32);
+                        r.contains(p)
+                    });
+
+                    if over_toolbar {
+                        let egui_button = match *button {
+                            0x110 => egui::PointerButton::Primary,
+                            0x111 => egui::PointerButton::Secondary,
+                            0x112 => egui::PointerButton::Middle,
+                            _ => egui::PointerButton::Primary,
+                        };
+                        self.egui.on_pointer_button(egui_pos, egui_button, true);
+                        self.pointer_owner = PointerOwner::Egui;
+                    } else {
+                        self.handle_pointer_press(global_pos, *button);
+                        self.pointer_owner = PointerOwner::Overlay;
                     }
                 }
                 PointerEventKind::Release { button, .. } => {
-                    self.selection.on_pointer_release(global_pos, *button);
+                    match self.pointer_owner {
+                        PointerOwner::Egui => {
+                            let egui_button = match *button {
+                                0x110 => egui::PointerButton::Primary,
+                                0x111 => egui::PointerButton::Secondary,
+                                0x112 => egui::PointerButton::Middle,
+                                _ => egui::PointerButton::Primary,
+                            };
+                            self.egui.on_pointer_button(egui_pos, egui_button, false);
+                        }
+                        PointerOwner::Overlay | PointerOwner::None => {
+                            self.handle_pointer_release(global_pos, *button);
+                        }
+                    }
+                    self.pointer_owner = PointerOwner::None;
                 }
                 PointerEventKind::Motion { .. } => {
-                    self.selection.on_pointer_motion(global_pos);
+                    // Always feed motion to egui for hover effects, but only
+                    // route to overlay if it owns the drag (or no drag active).
+                    self.egui.on_pointer_move(egui_pos);
+                    if self.pointer_owner != PointerOwner::Egui {
+                        self.handle_pointer_motion(global_pos);
+                    }
                 }
                 PointerEventKind::Enter { .. } | PointerEventKind::Leave { .. } => {}
                 PointerEventKind::Axis { .. } => {}
@@ -429,7 +732,7 @@ impl PointerHandler for OverlayState {
             self.update_cursor(conn, global_pos);
         }
 
-        // Just mark dirty — the main loop or frame callback will render
+        // Mark dirty for re-render
         self.dirty = true;
     }
 }
@@ -439,11 +742,17 @@ impl KeyboardHandler for OverlayState {
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {}
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
         if event.keysym == Keysym::Escape {
-            if self.selection.on_escape() {
+            // If an annotation is selected, deselect it first
+            if self.annotations.has_selection() {
+                self.annotations.deselect_all();
+                self.dirty = true;
+            } else if self.selection.on_escape() {
                 tracing::info!("Esc pressed, exiting overlay");
                 self.exit_requested = true;
             } else {
                 tracing::info!("Esc pressed, selection cleared");
+                // Also clear annotations when selection is cleared
+                self.annotations.clear();
                 self.dirty = true;
             }
         } else if event.keysym == Keysym::Return {
@@ -453,6 +762,9 @@ impl KeyboardHandler for OverlayState {
                 }
                 crate::selection::ConfirmAction::NoSelection => {}
             }
+        } else if event.keysym == Keysym::Delete {
+            self.annotations.on_delete();
+            self.dirty = true;
         }
     }
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
@@ -512,6 +824,10 @@ fn run_inner(
         selection: SelectionState::new(),
         current_cursor: None,
         dirty: false,
+        annotations: AnnotationState::new(),
+        tool: Tool::Move,
+        egui: EguiState::new(1.0),
+        pointer_owner: PointerOwner::None,
     };
 
     event_queue.flush()?;
