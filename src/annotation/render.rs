@@ -12,7 +12,6 @@ use lyon_tessellation::{StrokeOptions, StrokeTessellator, BuffersBuilder, Vertex
 /// - `drawing_transform`: transform for the in-progress drawing
 /// - `drawing_color`: color for the in-progress drawing
 /// - `edit_handles`: edit handles to render for the selected annotation
-/// - `selection_rect`: global logical rect of the selection (for scissor)
 /// - `output_rect`: global logical rect of this output (origin + logical size)
 /// - `scale_factor`: output scale factor (logical → physical)
 /// - `surface_size`: physical pixel size of the wgpu surface
@@ -24,7 +23,6 @@ pub fn tessellate_annotations(
     drawing_transform: Option<Affine2>,
     drawing_color: Option<[f32; 4]>,
     edit_handles: &[EditHandlePos],
-    _selection_rect: Option<Rect>,
     output_rect: Rect,
     scale_factor: i32,
     surface_size: (u32, u32),

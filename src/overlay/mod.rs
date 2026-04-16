@@ -313,7 +313,6 @@ impl OverlayState {
                 drawing_transform,
                 None, // drawing_color
                 if selected_idx.is_some() { &edit_handles } else { &[] },
-                global_rect,
                 output_rect,
                 scale,
                 (phys_w, phys_h),
@@ -331,19 +330,6 @@ impl OverlayState {
                     &bytemuck::cast_slice(&ann_verts)[..bytes_to_write],
                 );
             }
-
-            // Compute scissor rect for annotation clipping (selection rect in physical pixels)
-            let scissor = match local_data[idx].0 {
-                Some(r) if r.x >= 0 && r.y >= 0 && r.w > 0 && r.h > 0 => {
-                    let sf = scale.max(1) as u32;
-                    let sx = r.x as u32 * sf;
-                    let sy = r.y as u32 * sf;
-                    let sw = r.w as u32 * sf;
-                    let sh = r.h as u32 * sf;
-                    Some((sx, sy, sw, sh))
-                }
-                _ => None,
-            };
 
             // Render
             if let (Some(surface), Some(config), Some(bg), Some(sel_bg)) =
@@ -369,7 +355,7 @@ impl OverlayState {
                 let view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
                 // Render main passes (screenshot + annotations + handles)
-                self.gpu.render_into(&view, bg, sel_bg, sel_verts, ann_verts_opt, scissor);
+                self.gpu.render_into(&view, bg, sel_bg, sel_verts, ann_verts_opt);
 
                 // Render egui toolbar on this output only if it's the toolbar output
                 if toolbar_output_idx == Some(idx) {

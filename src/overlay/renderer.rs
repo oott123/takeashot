@@ -469,7 +469,6 @@ impl Gpu {
         selection_bind_group: &BindGroup,
         selection_vertex_buffer: Option<(&Buffer, u32)>,
         annotation_vertex_buffer: Option<(&Buffer, u32)>,
-        scissor_rect: Option<(u32, u32, u32, u32)>,
     ) {
         let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("overlay render"),
@@ -496,7 +495,7 @@ impl Gpu {
             pass.draw(0..3, 0..1);
         }
 
-        // Pass 2: draw annotations (with scissor rect for selection clipping)
+        // Pass 2: draw annotations
         if let Some((vbuf, count)) = annotation_vertex_buffer {
             if count > 0 {
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -512,9 +511,6 @@ impl Gpu {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                if let Some((x, y, w, h)) = scissor_rect {
-                    pass.set_scissor_rect(x, y, w, h);
-                }
                 pass.set_pipeline(&self.handles_pipeline);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.draw(0..count, 0..1);

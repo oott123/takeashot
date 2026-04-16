@@ -123,7 +123,7 @@ enum Selection {
 - Shape 枚举带 `transform: Affine2`（`glam`），编辑操作只改 transform 与原始几何。
 - 用 `lyon` tessellate 成三角形带，提交给 wgpu 一个简单的带 MSAA 的 pipeline。
 - 选中态的手柄/旋转柄直接用 egui 画（overlay 层），免自己实现命中测试 UI。
-- 裁剪：片段着色器用选区 rect 做 `discard`，或用 scissor rect——scissor 更快。
+- 标注在选区内外均可见，不做裁剪。
 
 ### 9. 合成输出 (`compose.rs` → `clipboard.rs`)
 - Enter/双击 → 对每屏离屏 render 到 `Texture`，readback 到 CPU，按几何拼到一张 `image::RgbaImage`。
