@@ -10,6 +10,8 @@ pub struct App {
     trigger_rx: watch::Receiver<bool>,
     /// D-Bus connection for KWin calls.
     dbus_conn: zbus::Connection,
+    /// Slot for the oneshot sender that receives window data from KWin scripts.
+    window_data_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<String>>>>,
 }
 
 impl App {
@@ -21,7 +23,9 @@ impl App {
         let app = App {
             trigger_rx,
             dbus_conn,
+            window_data_tx: window_data_tx.clone(),
         };
+
         let handle = SessionHandle {
             activate_tx,
             window_data_tx,
@@ -51,7 +55,18 @@ impl App {
     /// enumerates Wayland outputs, so each screen gets its own capture.
     async fn start_session(&self) -> anyhow::Result<()> {
         tracing::info!("starting overlay");
-        crate::overlay::run(self.dbus_conn.clone())?;
+
+        // Fetch window list before entering the blocking overlay loop,
+        // so the tokio runtime can still process D-Bus callbacks.
+        let windows = crate::kwin::windows::fetch_window_list(
+            &self.dbus_conn,
+            &self.window_data_tx,
+        ).await.unwrap_or_else(|e| {
+            tracing::warn!("failed to fetch window list, snap disabled: {e:#}");
+            Vec::new()
+        });
+
+        crate::overlay::run(self.dbus_conn.clone(), windows)?;
         tracing::info!("overlay closed");
         Ok(())
     }

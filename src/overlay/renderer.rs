@@ -382,9 +382,11 @@ impl Gpu {
 
     /// Build the vertices for selection border + handles.
     /// Returns vertex data as a Vec (caller writes to pre-allocated buffer).
+    /// When `include_handles` is false, only the border is drawn (for Pending/Creating states).
     pub fn build_selection_vertices(
         rect: &Rect,
         surface_size: (u32, u32),
+        include_handles: bool,
     ) -> Vec<ColoredVertex> {
         let sw = surface_size.0 as f32;
         let sh = surface_size.1 as f32;
@@ -416,25 +418,27 @@ impl Gpu {
         // Right border
         vertices.extend_from_slice(&quad(r, t + bh, r + bw, b - bh, border_color));
 
-        // 8 handles: 6x6 pixel squares
-        let hs = 3.0; // half-size in pixels
-        let hsx = hs / sw * 2.0;
-        let hsy = hs / sh * 2.0;
+        // 8 handles: 6x6 pixel squares (only for Confirmed state)
+        if include_handles {
+            let hs = 3.0; // half-size in pixels
+            let hsx = hs / sw * 2.0;
+            let hsy = hs / sh * 2.0;
 
-        let mx = (l + r) / 2.0;
-        let my = (t + b) / 2.0;
+            let mx = (l + r) / 2.0;
+            let my = (t + b) / 2.0;
 
-        let handles = [
-            (l, t), (mx, t), (r, t),
-            (l, my), (r, my),
-            (l, b), (mx, b), (r, b),
-        ];
+            let handles = [
+                (l, t), (mx, t), (r, t),
+                (l, my), (r, my),
+                (l, b), (mx, b), (r, b),
+            ];
 
-        for (hx, hy) in &handles {
-            vertices.extend_from_slice(&quad(
-                hx - hsx, hy - hsy, hx + hsx, hy + hsy,
-                handle_color,
-            ));
+            for (hx, hy) in &handles {
+                vertices.extend_from_slice(&quad(
+                    hx - hsx, hy - hsy, hx + hsx, hy + hsy,
+                    handle_color,
+                ));
+            }
         }
 
         vertices

@@ -28,16 +28,20 @@ pub enum CursorShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DragOp {
     Creating,
+    /// Press on snap preview — will become Creating on drag or Confirmed on release.
+    PendingSnap { rect: Rect },
     Moving,
     Resizing(Handle),
     Extending(Handle),
 }
 
-/// Selection state: None → Pending (window snap preview, M6) → Confirmed.
+/// Selection state: None → Pending (window snap preview) → Confirmed.
+/// Creating is the drag-to-select intermediate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
     None,
     Pending { rect: Rect },
+    Creating { rect: Rect },
     Confirmed { rect: Rect },
 }
 
@@ -45,11 +49,18 @@ impl Selection {
     pub fn rect(&self) -> Option<&Rect> {
         match self {
             Selection::None => None,
-            Selection::Pending { rect } | Selection::Confirmed { rect } => Some(rect),
+            Selection::Pending { rect }
+            | Selection::Creating { rect }
+            | Selection::Confirmed { rect } => Some(rect),
         }
     }
 
     pub fn is_confirmed(&self) -> bool {
+        matches!(self, Selection::Confirmed { .. })
+    }
+
+    /// Returns true if this state should render resize handles.
+    pub fn shows_handles(&self) -> bool {
         matches!(self, Selection::Confirmed { .. })
     }
 }
@@ -162,7 +173,7 @@ impl SelectionState {
         // Right click: cancel selection or exit
         if button == BTN_RIGHT {
             match self.selection {
-                Selection::Confirmed { .. } | Selection::Pending { .. } => {
+                Selection::Confirmed { .. } | Selection::Pending { .. } | Selection::Creating { .. } => {
                     self.cancel();
                     return false;
                 }
@@ -183,9 +194,15 @@ impl SelectionState {
                 self.drag = Some(DragOp::Creating);
                 self.drag_start_pos = Some(pos);
                 self.drag_start_rect = None;
-                self.selection = Selection::Pending {
+                self.selection = Selection::Creating {
                     rect: Rect::new(p.x, p.y, 0, 0),
                 };
+            }
+            Selection::Pending { rect } => {
+                // Press on snap preview — don't confirm yet.
+                // Will become Confirmed on release (click) or Creating on motion (drag).
+                self.drag = Some(DragOp::PendingSnap { rect });
+                self.drag_start_pos = Some(pos);
             }
             Selection::Confirmed { rect } => {
                 // Check handle hit first
@@ -208,12 +225,13 @@ impl SelectionState {
                     self.selection = Selection::Confirmed { rect: expanded };
                 }
             }
-            Selection::Pending { .. } => {
-                // Pending state is for window snapping (M6), treat as creating
+            Selection::Creating { .. } => {
+                // Shouldn't happen during normal flow (press starts Creating)
+                // but handle gracefully by starting a new creation
                 self.drag = Some(DragOp::Creating);
                 self.drag_start_pos = Some(pos);
                 self.drag_start_rect = None;
-                self.selection = Selection::Pending {
+                self.selection = Selection::Creating {
                     rect: Rect::new(p.x, p.y, 0, 0),
                 };
             }
@@ -234,7 +252,9 @@ impl SelectionState {
     }
 
     /// Handle a pointer motion event.
-    pub fn on_pointer_motion(&mut self, pos: (f64, f64)) {
+    /// `snap_rect`: the window under the pointer (for snap preview), if any.
+    /// Only used when no drag is active and selection is None/Pending.
+    pub fn on_pointer_motion(&mut self, pos: (f64, f64), snap_rect: Option<Rect>) {
         let prev = match self.last_pointer {
             Some(p) => p,
             None => { self.last_pointer = Some(pos); return; }
@@ -245,13 +265,34 @@ impl SelectionState {
 
         match self.drag {
             Some(DragOp::Creating) => {
-                if let Selection::Pending { rect } = &mut self.selection {
+                if let Selection::Creating { rect } = &mut self.selection {
                     let start = self.drag_start_pos.unwrap();
                     rect.x = start.0 as i32;
                     rect.y = start.1 as i32;
                     rect.w = (pos.0 - start.0) as i32;
                     rect.h = (pos.1 - start.1) as i32;
                 }
+            }
+            Some(DragOp::PendingSnap { .. }) => {
+                // If moved enough from press point, override snap with drag creation
+                let start = self.drag_start_pos.unwrap();
+                let dx = (pos.0 - start.0).abs();
+                let dy = (pos.1 - start.1).abs();
+                if dx > 2.0 || dy > 2.0 {
+                    let snap_rect = match self.selection {
+                        Selection::Pending { rect } => rect,
+                        _ => Rect::new(start.0 as i32, start.1 as i32, 0, 0),
+                    };
+                    self.drag = Some(DragOp::Creating);
+                    let p = Point::new(start.0 as i32, start.1 as i32);
+                    self.selection = Selection::Creating {
+                        rect: Rect::new(p.x, p.y, (pos.0 - start.0) as i32, (pos.1 - start.1) as i32),
+                    };
+                    // Keep snap_rect available for potential cancellation (not needed now,
+                    // but if user presses Escape during PendingSnap, we restore it)
+                    let _ = snap_rect;
+                }
+                // If not moved enough, stay in PendingSnap (still showing snap preview)
             }
             Some(DragOp::Moving) => {
                 // Pre-compute clamped rect to avoid borrow conflict
@@ -279,14 +320,27 @@ impl SelectionState {
                     let total_dy = (pos.1 - self.drag_start_pos.unwrap().1) as i32;
                     let new_rect = Self::resize_with_handle(&start_rect, handle, total_dx, total_dy);
                     match &mut self.selection {
-                        Selection::Confirmed { rect } | Selection::Pending { rect } => {
+                        Selection::Confirmed { rect }
+                        | Selection::Creating { rect }
+                        | Selection::Pending { rect } => {
                             *rect = new_rect;
                         }
                         Selection::None => {}
                     }
                 }
             }
-            None => {}
+            None => {
+                // No drag active — update snap preview
+                match self.selection {
+                    Selection::None | Selection::Pending { .. } => {
+                        self.selection = match snap_rect {
+                            Some(r) => Selection::Pending { rect: r },
+                            None => Selection::None,
+                        };
+                    }
+                    _ => {}
+                }
+            }
         }
 
         self.last_pointer = Some(pos);
@@ -300,7 +354,7 @@ impl SelectionState {
 
         match self.drag {
             Some(DragOp::Creating) => {
-                if let Selection::Pending { rect } = &self.selection {
+                if let Selection::Creating { rect } = &self.selection {
                     let normalized = rect.normalize();
                     if normalized.w >= 2 && normalized.h >= 2 {
                         self.selection = Selection::Confirmed { rect: normalized };
@@ -309,6 +363,10 @@ impl SelectionState {
                         self.selection = Selection::None;
                     }
                 }
+            }
+            Some(DragOp::PendingSnap { rect }) => {
+                // Click on snap preview → confirm
+                self.selection = Selection::Confirmed { rect };
             }
             Some(DragOp::Resizing(_)) | Some(DragOp::Extending(_)) => {
                 // Normalize the rect after resize
@@ -334,7 +392,7 @@ impl SelectionState {
     /// Returns true if the overlay should exit.
     pub fn on_escape(&mut self) -> bool {
         match self.selection {
-            Selection::Confirmed { .. } | Selection::Pending { .. } => {
+            Selection::Confirmed { .. } | Selection::Pending { .. } | Selection::Creating { .. } => {
                 self.cancel();
                 false
             }
@@ -363,7 +421,7 @@ impl SelectionState {
         // During drag, cursor follows the drag operation
         if self.drag.is_some() {
             return match self.drag {
-                Some(DragOp::Creating) => CursorShape::Crosshair,
+                Some(DragOp::Creating) | Some(DragOp::PendingSnap { .. }) => CursorShape::Crosshair,
                 Some(DragOp::Moving) => CursorShape::Move,
                 Some(DragOp::Resizing(h)) | Some(DragOp::Extending(h)) => {
                     handle_cursor(&h)
@@ -377,6 +435,7 @@ impl SelectionState {
         match &self.selection {
             Selection::None => CursorShape::Crosshair,
             Selection::Pending { .. } => CursorShape::Crosshair,
+            Selection::Creating { .. } => CursorShape::Crosshair,
             Selection::Confirmed { rect } => {
                 const HANDLE_TOL: i32 = 6;
                 if let Some(h) = Self::handle_at(rect, p, HANDLE_TOL) {
@@ -412,7 +471,7 @@ mod tests {
     fn drag_creates_selection() {
         let mut s = SelectionState::new();
         s.on_pointer_press((100.0, 200.0), BTN_LEFT);
-        s.on_pointer_motion((300.0, 400.0));
+        s.on_pointer_motion((300.0, 400.0), None);
         s.on_pointer_release((300.0, 400.0), BTN_LEFT);
 
         assert_eq!(s.selection, Selection::Confirmed {
@@ -424,7 +483,7 @@ mod tests {
     fn drag_right_to_left_normalizes() {
         let mut s = SelectionState::new();
         s.on_pointer_press((300.0, 400.0), BTN_LEFT);
-        s.on_pointer_motion((100.0, 200.0));
+        s.on_pointer_motion((100.0, 200.0), None);
         s.on_pointer_release((100.0, 200.0), BTN_LEFT);
 
         assert_eq!(s.selection, Selection::Confirmed {
@@ -436,7 +495,7 @@ mod tests {
     fn too_small_drag_is_cancelled() {
         let mut s = SelectionState::new();
         s.on_pointer_press((100.0, 200.0), BTN_LEFT);
-        s.on_pointer_motion((101.0, 201.0));
+        s.on_pointer_motion((101.0, 201.0), None);
         s.on_pointer_release((101.0, 201.0), BTN_LEFT);
 
         assert_eq!(s.selection, Selection::None);
@@ -448,7 +507,7 @@ mod tests {
         s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
 
         s.on_pointer_press((150.0, 150.0), BTN_LEFT); // inside rect
-        s.on_pointer_motion((160.0, 170.0));
+        s.on_pointer_motion((160.0, 170.0), None);
         s.on_pointer_release((160.0, 170.0), BTN_LEFT);
 
         assert_eq!(s.selection, Selection::Confirmed {
@@ -465,7 +524,7 @@ mod tests {
 
         s.on_pointer_press((150.0, 150.0), BTN_LEFT);
         // Move 200px left — would put x at -100, but clamped to 0
-        s.on_pointer_motion((-50.0, 150.0));
+        s.on_pointer_motion((-50.0, 150.0), None);
         match s.selection {
             Selection::Confirmed { rect } => {
                 assert_eq!(rect.x, 0); // clamped
@@ -482,7 +541,7 @@ mod tests {
 
         // Click on bottom-right handle (300, 300)
         s.on_pointer_press((300.0, 300.0), BTN_LEFT);
-        s.on_pointer_motion((350.0, 350.0));
+        s.on_pointer_motion((350.0, 350.0), None);
         s.on_pointer_release((350.0, 350.0), BTN_LEFT);
 
         assert_eq!(s.selection, Selection::Confirmed {
@@ -507,7 +566,7 @@ mod tests {
         }
 
         // Drag further down to 450 — extends another 50 from drag start
-        s.on_pointer_motion((200.0, 450.0));
+        s.on_pointer_motion((200.0, 450.0), None);
         s.on_pointer_release((200.0, 450.0), BTN_LEFT);
         match s.selection {
             Selection::Confirmed { rect } => {
@@ -533,7 +592,7 @@ mod tests {
             _ => panic!("expected Confirmed after press"),
         }
 
-        s.on_pointer_motion((450.0, 200.0));
+        s.on_pointer_motion((450.0, 200.0), None);
         s.on_pointer_release((450.0, 200.0), BTN_LEFT);
         match s.selection {
             Selection::Confirmed { rect } => {
@@ -559,7 +618,7 @@ mod tests {
             _ => panic!("expected Confirmed after press"),
         }
 
-        s.on_pointer_motion((450.0, 450.0));
+        s.on_pointer_motion((450.0, 450.0), None);
         s.on_pointer_release((450.0, 450.0), BTN_LEFT);
         match s.selection {
             Selection::Confirmed { rect } => {
@@ -635,5 +694,131 @@ mod tests {
         let mut s = SelectionState::new();
         s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
         assert_eq!(s.cursor_for_position((50.0, 50.0)), CursorShape::Crosshair);
+    }
+
+    // --- Snap preview (Pending) tests ---
+
+    #[test]
+    fn snap_preview_on_motion() {
+        let mut s = SelectionState::new();
+        s.last_pointer = Some((0.0, 0.0)); // Initialize so motion doesn't early-return
+        let snap = Rect::new(10, 20, 800, 600);
+        s.on_pointer_motion((100.0, 100.0), Some(snap));
+        assert_eq!(s.selection, Selection::Pending { rect: snap });
+    }
+
+    #[test]
+    fn snap_preview_clears_when_no_window() {
+        let mut s = SelectionState::new();
+        // Start with a snap preview
+        s.selection = Selection::Pending { rect: Rect::new(10, 20, 800, 600) };
+        s.last_pointer = Some((100.0, 100.0));
+        // Move to a position with no window
+        s.on_pointer_motion((900.0, 900.0), None);
+        assert_eq!(s.selection, Selection::None);
+    }
+
+    #[test]
+    fn snap_preview_updates_on_different_window() {
+        let mut s = SelectionState::new();
+        s.last_pointer = Some((0.0, 0.0)); // Initialize
+        let snap1 = Rect::new(10, 20, 800, 600);
+        s.on_pointer_motion((100.0, 100.0), Some(snap1));
+        assert_eq!(s.selection, Selection::Pending { rect: snap1 });
+
+        let snap2 = Rect::new(900, 20, 800, 600);
+        s.on_pointer_motion((1000.0, 100.0), Some(snap2));
+        assert_eq!(s.selection, Selection::Pending { rect: snap2 });
+    }
+
+    #[test]
+    fn click_on_pending_confirms() {
+        let mut s = SelectionState::new();
+        let snap = Rect::new(10, 20, 800, 600);
+        s.selection = Selection::Pending { rect: snap };
+        s.last_pointer = Some((100.0, 100.0));
+
+        // Press enters PendingSnap state
+        let should_exit = s.on_pointer_press((100.0, 100.0), BTN_LEFT);
+        assert!(!should_exit);
+        // Still Pending (not yet confirmed)
+        assert!(matches!(s.selection, Selection::Pending { .. }));
+
+        // Release confirms the snap
+        s.on_pointer_release((100.0, 100.0), BTN_LEFT);
+        assert_eq!(s.selection, Selection::Confirmed { rect: snap });
+    }
+
+    #[test]
+    fn drag_from_pending_overrides() {
+        let mut s = SelectionState::new();
+        let snap = Rect::new(10, 20, 800, 600);
+        s.selection = Selection::Pending { rect: snap };
+        s.last_pointer = Some((100.0, 100.0));
+
+        // Press on Pending → enters PendingSnap (not yet confirmed)
+        s.on_pointer_press((100.0, 100.0), BTN_LEFT);
+        // Should still be Pending (waiting for release or drag)
+        assert!(matches!(s.selection, Selection::Pending { .. }));
+
+        // Motion past threshold → overrides to Creating
+        s.on_pointer_motion((150.0, 150.0), None);
+        assert!(matches!(s.selection, Selection::Creating { .. }));
+
+        // Release → Creating resolves to Confirmed with drag rect
+        s.on_pointer_release((150.0, 150.0), BTN_LEFT);
+        assert!(matches!(s.selection, Selection::Confirmed { .. }));
+    }
+
+    #[test]
+    fn cancel_pending() {
+        let mut s = SelectionState::new();
+        s.selection = Selection::Pending { rect: Rect::new(10, 20, 800, 600) };
+
+        let should_exit = s.on_escape();
+        assert!(!should_exit);
+        assert_eq!(s.selection, Selection::None);
+    }
+
+    #[test]
+    fn cancel_creating() {
+        let mut s = SelectionState::new();
+        s.selection = Selection::Creating { rect: Rect::new(10, 20, 800, 600) };
+
+        let should_exit = s.on_escape();
+        assert!(!should_exit);
+        assert_eq!(s.selection, Selection::None);
+    }
+
+    #[test]
+    fn right_click_cancels_pending() {
+        let mut s = SelectionState::new();
+        s.selection = Selection::Pending { rect: Rect::new(10, 20, 800, 600) };
+
+        let should_exit = s.on_pointer_press((100.0, 100.0), BTN_RIGHT);
+        assert!(!should_exit);
+        assert_eq!(s.selection, Selection::None);
+    }
+
+    #[test]
+    fn shows_handles_only_for_confirmed() {
+        assert!(!Selection::None.shows_handles());
+        assert!(!Selection::Pending { rect: Rect::new(0, 0, 100, 100) }.shows_handles());
+        assert!(!Selection::Creating { rect: Rect::new(0, 0, 100, 100) }.shows_handles());
+        assert!(Selection::Confirmed { rect: Rect::new(0, 0, 100, 100) }.shows_handles());
+    }
+
+    #[test]
+    fn creating_drag_to_confirmed() {
+        let mut s = SelectionState::new();
+        s.on_pointer_press((100.0, 200.0), BTN_LEFT);
+        // During drag, selection should be Creating
+        assert!(matches!(s.selection, Selection::Creating { .. }));
+        s.on_pointer_motion((300.0, 400.0), None);
+        s.on_pointer_release((300.0, 400.0), BTN_LEFT);
+        // After release, Creating → Confirmed
+        assert_eq!(s.selection, Selection::Confirmed {
+            rect: Rect::new(100, 200, 200, 200)
+        });
     }
 }

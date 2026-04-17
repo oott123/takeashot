@@ -27,6 +27,7 @@ use crate::annotation::AnnotationAction;
 use crate::capture;
 use crate::capture::CapturedScreen;
 use crate::geom::Rect;
+use crate::kwin::windows::WindowInfo;
 use crate::selection::{CursorShape, SelectionState};
 use crate::ui::toolbar::Tool;
 use crate::ui::EguiState;
@@ -89,6 +90,8 @@ struct OverlayState {
     egui: EguiState,
     /// Which subsystem owns the current pointer drag.
     pointer_owner: PointerOwner,
+    /// Window list from KWin (for snap matching). Empty if fetch failed.
+    windows: Vec<WindowInfo>,
 }
 
 delegate_compositor!(OverlayState);
@@ -284,8 +287,9 @@ impl OverlayState {
             );
 
             // Update selection vertex buffer
+            let include_handles = self.selection.selection.shows_handles();
             let verts = match local_data[idx].0 {
-                Some(r) => Gpu::build_selection_vertices(&r, (local_data[idx].1, local_data[idx].2)),
+                Some(r) => Gpu::build_selection_vertices(&r, (local_data[idx].1, local_data[idx].2), include_handles),
                 None => Vec::new(),
             };
             let vert_count = verts.len() as u32;
@@ -457,8 +461,14 @@ impl OverlayState {
 
     /// Tool-aware pointer motion handler.
     fn handle_pointer_motion(&mut self, pos: (f64, f64)) {
+        // Compute snap rect for this pointer position
+        let snap_rect = crate::snap::find_snap_window(
+            &self.windows,
+            crate::geom::Point::new(pos.0 as i32, pos.1 as i32),
+        );
+
         // Always forward to selection (it needs to track pointer for cursor)
-        self.selection.on_pointer_motion(pos);
+        self.selection.on_pointer_motion(pos, snap_rect);
 
         // Also forward to annotations if drawing or editing
         match self.tool {
@@ -773,8 +783,11 @@ fn get_display_ptr(conn: &Connection) -> *mut std::ffi::c_void {
 }
 
 /// Run the overlay event loop. Blocks until Esc is pressed or compositor closes.
-pub fn run(dbus_conn: zbus::Connection) -> Result<()> {
-    run_inner(dbus_conn, None)
+pub fn run(
+    dbus_conn: zbus::Connection,
+    windows: Vec<crate::kwin::windows::WindowInfo>,
+) -> Result<()> {
+    run_inner(dbus_conn, windows, None)
 }
 
 /// Run the overlay event loop with an auto-exit timeout.
@@ -782,11 +795,13 @@ pub fn run_with_timeout(
     dbus_conn: zbus::Connection,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    run_inner(dbus_conn, Some(timeout))
+    // Smoke mode: no window data (snap disabled)
+    run_inner(dbus_conn, Vec::new(), Some(timeout))
 }
 
 fn run_inner(
     dbus_conn: zbus::Connection,
+    windows: Vec<crate::kwin::windows::WindowInfo>,
     timeout: Option<std::time::Duration>,
 ) -> Result<()> {
     let conn = Connection::connect_to_env().context("failed to connect to Wayland display")?;
@@ -814,6 +829,7 @@ fn run_inner(
         tool: Tool::Move,
         egui: EguiState::new(1.0),
         pointer_owner: PointerOwner::None,
+        windows,
     };
 
     event_queue.flush()?;

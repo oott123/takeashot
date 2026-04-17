@@ -20,11 +20,13 @@ struct TakeashotService {
 
 #[interface(name = "com.takeashot.Service")]
 impl TakeashotService {
+    #[zbus(name = "activate")]
     async fn activate(&self) {
         tracing::info!("activate() called via D-Bus");
         let _ = self.handle.activate_tx.send(true);
     }
 
+    #[zbus(name = "receive_window_data")]
     async fn receive_window_data(&self, json_str: String) {
         tracing::debug!("received window data ({} bytes)", json_str.len());
         let mut guard = self.handle.window_data_tx.lock().await;

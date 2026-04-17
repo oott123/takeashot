@@ -25,7 +25,14 @@
       "Bash(timeout 12 bash -c 'RUST_LOG=info /home/alice/Repos/newshot/target/debug/takeashot --smoke 2>&1')",
       "Bash(cat ~/.cargo/:*)",
       "Bash(cat ~/.cargo/*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(cargo run:*)",
+      "Bash(qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /tmp/test.js test123)",
+      "Bash(echo \"exit: $?\")",
+      "Read(//home/alice/.local/share/**)",
+      "Read(//home/alice/.local/share/kwin/**)",
+      "Bash(RUST_LOG=takeashot=debug timeout 15 cargo run -- --now)",
+      "Bash(qdbus:*)"
     ]
   }
 }

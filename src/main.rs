@@ -7,6 +7,7 @@ mod kwin;
 mod overlay;
 mod selection;
 mod single_instance;
+mod snap;
 mod ui;
 
 use anyhow::Result;
