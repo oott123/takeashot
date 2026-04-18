@@ -88,7 +88,7 @@ impl EguiState {
         });
 
         // Tessellate shapes into paint jobs
-        self.paint_jobs = self.ctx.tessellate(full_output.shapes, 1.0);
+        self.paint_jobs = self.ctx.tessellate(full_output.shapes, self.pixels_per_point);
 
         // Upload textures immediately — must happen before paint() and every frame,
         // even when paint() won't be called (otherwise deltas accumulate and break).
