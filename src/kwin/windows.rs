@@ -133,7 +133,7 @@ async fn fetch_window_list_inner(
         .context("failed to deserialize loadScript reply")?;
     tracing::debug!("KWin script loaded, id={script_id}");
 
-    if script_id <= 0 {
+    if script_id < 0 {
         anyhow::bail!("KWin loadScript returned id={script_id}, file may not be readable by KWin (path={path_str})");
     }
 
