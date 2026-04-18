@@ -12,11 +12,13 @@ pub struct App {
     dbus_conn: zbus::Connection,
     /// Slot for the oneshot sender that receives window data from KWin scripts.
     window_data_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<String>>>>,
+    /// If true, exit after the first session completes.
+    single_session: bool,
 }
 
 impl App {
     /// Create a new App and a SessionHandle for the D-Bus service.
-    pub fn new(dbus_conn: zbus::Connection) -> (Self, SessionHandle) {
+    pub fn new(dbus_conn: zbus::Connection, single_session: bool) -> (Self, SessionHandle) {
         let (activate_tx, trigger_rx) = watch::channel(false);
         let window_data_tx = Arc::new(Mutex::new(None));
 
@@ -24,6 +26,7 @@ impl App {
             trigger_rx,
             dbus_conn,
             window_data_tx: window_data_tx.clone(),
+            single_session,
         };
 
         let handle = SessionHandle {
@@ -47,6 +50,11 @@ impl App {
 
             if let Err(e) = self.start_session().await {
                 tracing::error!("session failed: {e:#}");
+            }
+
+            if self.single_session {
+                tracing::info!("single-session mode, exiting");
+                return Ok(());
             }
         }
     }

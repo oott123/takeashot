@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
     }
 
     // Create the App and a handle for D-Bus to call back into.
-    let (app, handle) = app::App::new(dbus_conn.clone());
+    let (app, handle) = app::App::new(dbus_conn.clone(), args.now);
 
     // Try to register our D-Bus service. If another instance is already
     // running, call its activate() and exit.
