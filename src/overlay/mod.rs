@@ -92,6 +92,8 @@ struct OverlayState {
     pointer_owner: PointerOwner,
     /// Window list from KWin (for snap matching). Empty if fetch failed.
     windows: Vec<WindowInfo>,
+    /// Last left-click time and position for double-click detection.
+    last_click: Option<(u32, (f64, f64))>,
 }
 
 delegate_compositor!(OverlayState);
@@ -415,8 +417,78 @@ impl OverlayState {
         }
     }
 
+    /// Compose the final image from the current selection + annotations,
+    /// copy to clipboard, and set exit_requested.
+    fn confirm_and_exit(&mut self) {
+        match self.selection.on_enter() {
+            crate::selection::ConfirmAction::Confirmed { rect } => {
+                tracing::info!("confirming selection: {rect:?}");
+                let output_infos: Vec<crate::compose::OutputInfo> = self.overlays.iter()
+                    .filter(|o| o.configured && o.bg_bind_group.is_some())
+                    .map(|o| crate::compose::OutputInfo {
+                        output_name: o.output_name.clone(),
+                        output_pos: o.output_pos,
+                        width: o.width,
+                        height: o.height,
+                        scale_factor: o.scale_factor,
+                        bg_bind_group: o.bg_bind_group.clone().unwrap(),
+                    })
+                    .collect();
+
+                match crate::compose::compose_selection(
+                    &self.gpu, &output_infos, &self.captured, &self.annotations, rect,
+                ) {
+                    Ok(img) => {
+                        let mut png_buf = Vec::new();
+                        let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
+                        match image::ImageEncoder::write_image(
+                            encoder,
+                            img.as_raw(),
+                            img.width(),
+                            img.height(),
+                            image::ExtendedColorType::Rgba8,
+                        ) {
+                            Ok(()) => {
+                                if let Err(e) = crate::clipboard::copy_to_clipboard(&png_buf) {
+                                    tracing::error!("clipboard copy failed: {e:#}");
+                                }
+                            }
+                            Err(e) => tracing::error!("PNG encode failed: {e:#}"),
+                        }
+                    }
+                    Err(e) => tracing::error!("compose failed: {e:#}"),
+                }
+                self.exit_requested = true;
+            }
+            crate::selection::ConfirmAction::NoSelection => {}
+        }
+    }
+
     /// Tool-aware pointer press handler.
-    fn handle_pointer_press(&mut self, pos: (f64, f64), button: u32) {
+    fn handle_pointer_press(&mut self, pos: (f64, f64), button: u32, time: u32) {
+        // Double-click detection: left click inside confirmed selection with Move tool
+        if button == 0x110 && self.tool == Tool::Move && self.selection.selection.is_confirmed() {
+            let inside = self.selection.selection.rect().map_or(false, |r| {
+                let p = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
+                r.contains(p)
+            });
+            if inside {
+                if let Some((prev_time, prev_pos)) = self.last_click {
+                    let dt = time.wrapping_sub(prev_time);
+                    let dist = ((pos.0 - prev_pos.0).abs() + (pos.1 - prev_pos.1).abs()) < 5.0;
+                    if dt < 300 && dist {
+                        self.last_click = None;
+                        self.confirm_and_exit();
+                        return;
+                    }
+                }
+            }
+        }
+        // Track this click for double-click detection (left button only)
+        if button == 0x110 {
+            self.last_click = Some((time, pos));
+        }
+
         let prev_had_selection = self.global_selection_rect().is_some();
 
         match self.tool {
@@ -675,7 +747,7 @@ impl PointerHandler for OverlayState {
                 .unwrap_or(global_pos);
 
             match &event.kind {
-                PointerEventKind::Press { button, .. } => {
+                PointerEventKind::Press { button, time, .. } => {
                     // Decide ownership on Press: if pointer is over toolbar → egui, else → overlay
                     let over_toolbar = self.compute_toolbar_rect().map_or(false, |r| {
                         let p = crate::geom::Point::new(global_pos.0 as i32, global_pos.1 as i32);
@@ -692,7 +764,7 @@ impl PointerHandler for OverlayState {
                         self.egui.on_pointer_button(egui_pos, egui_button, true);
                         self.pointer_owner = PointerOwner::Egui;
                     } else {
-                        self.handle_pointer_press(global_pos, *button);
+                        self.handle_pointer_press(global_pos, *button, *time);
                         self.pointer_owner = PointerOwner::Overlay;
                     }
                 }
@@ -752,12 +824,7 @@ impl KeyboardHandler for OverlayState {
                 self.dirty = true;
             }
         } else if event.keysym == Keysym::Return {
-            match self.selection.on_enter() {
-                crate::selection::ConfirmAction::Confirmed { rect } => {
-                    tracing::info!("Enter pressed, selection confirmed: {rect:?}");
-                }
-                crate::selection::ConfirmAction::NoSelection => {}
-            }
+            self.confirm_and_exit();
         } else if event.keysym == Keysym::Delete {
             self.annotations.on_delete();
             self.dirty = true;
@@ -830,6 +897,7 @@ fn run_inner(
         egui: EguiState::new(1.0),
         pointer_owner: PointerOwner::None,
         windows,
+        last_click: None,
     };
 
     event_queue.flush()?;

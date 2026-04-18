@@ -1,6 +1,8 @@
 mod annotation;
 mod app;
 mod capture;
+mod clipboard;
+mod compose;
 mod geom;
 mod hotkey;
 mod kwin;
