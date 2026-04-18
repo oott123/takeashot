@@ -17,14 +17,21 @@ pub struct WindowInfo {
     pub height: f64,
 }
 
-const SCRIPT_JS: &str = include_str!("window_script.js");
+const SCRIPT_TEMPLATE: &str = include_str!("window_script.js");
 const PLUGIN_NAME: &str = "takeashot-window-list";
+
+/// Default D-Bus service name used by the main instance.
+pub const DEFAULT_SERVICE_NAME: &str = "com.takeashot.service";
 
 /// Retrieve the list of normal, non-minimized windows via KWin scripting.
 ///
+/// `service_name` is the D-Bus service name where `receive_window_data` is
+/// registered. For the main instance this is `com.takeashot.service`; for
+/// smoke mode it's a random name to avoid conflicts.
+///
 /// The pipeline:
 /// 1. Create a oneshot channel and install the sender into `window_data_slot`
-/// 2. Write the JS script to a temporary file
+/// 2. Write the JS script (with the service name baked in) to a temp file
 /// 3. Call `loadScript` → `run()` on KWin Scripting D-Bus
 /// 4. Wait for the `receive_window_data` callback (5s timeout)
 /// 5. Unload the script and delete the temp file
@@ -34,6 +41,7 @@ const PLUGIN_NAME: &str = "takeashot-window-list";
 pub async fn fetch_window_list(
     conn: &zbus::Connection,
     window_data_slot: &Arc<Mutex<Option<oneshot::Sender<String>>>>,
+    service_name: &str,
 ) -> Result<Vec<WindowInfo>> {
     // 1. Set up oneshot channel
     let (tx, rx) = oneshot::channel::<String>();
@@ -48,10 +56,13 @@ pub async fn fetch_window_list(
     let script_path = std::env::current_dir()
         .context("failed to get current directory")?
         .join(format!(".takeashot-script-{:x}.js", std::process::id()));
+
+    // Inject the service name into the script template
+    let script_content = SCRIPT_TEMPLATE.replace("{{SERVICE_NAME}}", service_name);
     {
         let mut f = std::fs::File::create(&script_path)
             .context("failed to create temp script file")?;
-        f.write_all(SCRIPT_JS.as_bytes())
+        f.write_all(script_content.as_bytes())
             .context("failed to write script")?;
     }
     tracing::debug!("wrote KWin script to {}", script_path.display());

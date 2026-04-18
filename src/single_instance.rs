@@ -38,6 +38,35 @@ impl TakeashotService {
     }
 }
 
+/// Register a smoke-mode D-Bus service with a custom name.
+///
+/// Unlike `register_or_activate`, this doesn't fail if the name is already
+/// taken — it just registers the object server and requests the name. Used
+/// for smoke test mode where we need `receive_window_data` but don't want
+/// to conflict with a running main instance.
+pub async fn register_smoke_service(
+    conn: &Connection,
+    window_data_tx: &Arc<Mutex<Option<tokio::sync::oneshot::Sender<String>>>>,
+    service_name: &str,
+) {
+    let service = TakeashotService {
+        handle: SessionHandle {
+            activate_tx: tokio::sync::watch::channel(false).0,
+            window_data_tx: window_data_tx.clone(),
+        },
+    };
+
+    conn.object_server()
+        .at("/com/takeashot/Service", service)
+        .await
+        .ok();
+
+    match conn.request_name(service_name).await {
+        Ok(_) => tracing::info!("registered smoke service {service_name} on session bus"),
+        Err(e) => tracing::warn!("failed to register smoke service {service_name}: {e}"),
+    }
+}
+
 /// Proxy for calling methods on an existing `com.takeashot.service` instance.
 #[zbus::proxy(
     interface = "com.takeashot.Service",

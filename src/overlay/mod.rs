@@ -793,10 +793,10 @@ pub fn run(
 /// Run the overlay event loop with an auto-exit timeout.
 pub fn run_with_timeout(
     dbus_conn: zbus::Connection,
+    windows: Vec<crate::kwin::windows::WindowInfo>,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    // Smoke mode: no window data (snap disabled)
-    run_inner(dbus_conn, Vec::new(), Some(timeout))
+    run_inner(dbus_conn, windows, Some(timeout))
 }
 
 fn run_inner(

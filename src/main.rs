@@ -46,7 +46,27 @@ async fn main() -> Result<()> {
 
     if args.smoke {
         tracing::info!("smoke test mode");
-        overlay::run_with_timeout(dbus_conn, std::time::Duration::from_secs(3))?;
+
+        // Register a smoke-mode D-Bus service with a random name to avoid
+        // conflicts with any running main instance.
+        let smoke_service_name = format!("com.takeashot.smoke.s{}", std::process::id());
+        let window_data_tx: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(None));
+
+        // Register the object server so KWin's callDBus can reach us
+        single_instance::register_smoke_service(&dbus_conn, &window_data_tx, &smoke_service_name).await;
+
+        // Fetch window list (best-effort; snap disabled on failure)
+        let windows = kwin::windows::fetch_window_list(
+            &dbus_conn,
+            &window_data_tx,
+            &smoke_service_name,
+        ).await.unwrap_or_else(|e| {
+            tracing::warn!("smoke: failed to fetch window list, snap disabled: {e:#}");
+            Vec::new()
+        });
+
+        overlay::run_with_timeout(dbus_conn, windows, std::time::Duration::from_secs(3))?;
         tracing::info!("smoke test passed");
         return Ok(());
     }

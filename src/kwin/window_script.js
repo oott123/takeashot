@@ -15,6 +15,6 @@ for (var i = windows.length - 1; i >= 0; i--) {
         });
     }
 }
-callDBus("com.takeashot.service", "/com/takeashot/Service",
+callDBus("{{SERVICE_NAME}}", "/com/takeashot/Service",
          "com.takeashot.Service", "receive_window_data",
          JSON.stringify(list));

@@ -61,6 +61,7 @@ impl App {
         let windows = crate::kwin::windows::fetch_window_list(
             &self.dbus_conn,
             &self.window_data_tx,
+            crate::kwin::windows::DEFAULT_SERVICE_NAME,
         ).await.unwrap_or_else(|e| {
             tracing::warn!("failed to fetch window list, snap disabled: {e:#}");
             Vec::new()
