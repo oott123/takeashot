@@ -173,9 +173,13 @@ impl SelectionState {
         // Right click: cancel selection or exit
         if button == BTN_RIGHT {
             match self.selection {
-                Selection::Confirmed { .. } | Selection::Pending { .. } | Selection::Creating { .. } => {
+                Selection::Confirmed { .. } | Selection::Creating { .. } => {
                     self.cancel();
                     return false;
+                }
+                Selection::Pending { .. } => {
+                    // Pending is just a preview — right-click exits directly
+                    return true;
                 }
                 Selection::None => {
                     return true; // signal exit
@@ -392,11 +396,11 @@ impl SelectionState {
     /// Returns true if the overlay should exit.
     pub fn on_escape(&mut self) -> bool {
         match self.selection {
-            Selection::Confirmed { .. } | Selection::Pending { .. } | Selection::Creating { .. } => {
+            Selection::Confirmed { .. } | Selection::Creating { .. } => {
                 self.cancel();
                 false
             }
-            Selection::None => true, // signal exit
+            Selection::Pending { .. } | Selection::None => true, // signal exit
         }
     }
 
@@ -771,13 +775,12 @@ mod tests {
     }
 
     #[test]
-    fn cancel_pending() {
+    fn escape_pending_exits() {
         let mut s = SelectionState::new();
         s.selection = Selection::Pending { rect: Rect::new(10, 20, 800, 600) };
 
         let should_exit = s.on_escape();
-        assert!(!should_exit);
-        assert_eq!(s.selection, Selection::None);
+        assert!(should_exit);
     }
 
     #[test]
@@ -791,13 +794,12 @@ mod tests {
     }
 
     #[test]
-    fn right_click_cancels_pending() {
+    fn right_click_pending_exits() {
         let mut s = SelectionState::new();
         s.selection = Selection::Pending { rect: Rect::new(10, 20, 800, 600) };
 
         let should_exit = s.on_pointer_press((100.0, 100.0), BTN_RIGHT);
-        assert!(!should_exit);
-        assert_eq!(s.selection, Selection::None);
+        assert!(should_exit);
     }
 
     #[test]
