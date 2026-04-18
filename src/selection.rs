@@ -72,8 +72,8 @@ pub struct SelectionState {
     last_pointer: Option<(f64, f64)>,
     drag_start_rect: Option<Rect>,
     drag_start_pos: Option<(f64, f64)>,
-    /// Total screen bounds (union of all outputs). Used to clamp selection on move.
-    pub bounds: Option<Rect>,
+    /// Individual screen rects. Used to compute per-move bounds that exclude dead zones.
+    pub screen_rects: Vec<Rect>,
 }
 
 /// Result of a confirm action (Enter key or double-click).
@@ -93,8 +93,18 @@ impl SelectionState {
             last_pointer: None,
             drag_start_rect: None,
             drag_start_pos: None,
-            bounds: None,
+            screen_rects: Vec::new(),
         }
+    }
+
+    /// Compute the bounding box of screens that overlap `rect`.
+    /// Falls back to the bounding box of all screens if none overlap.
+    fn move_bounds_for(&self, rect: &Rect) -> Option<Rect> {
+        let bounds = self.screen_rects.iter()
+            .filter(|s| s.intersect(rect).is_some())
+            .copied()
+            .reduce(|a, r| a.bounding(&r));
+        bounds.or_else(|| self.screen_rects.iter().copied().reduce(|a, r| a.bounding(&r)))
     }
 
     /// Hit-test the 8 handles of a confirmed selection.
@@ -296,7 +306,6 @@ impl SelectionState {
                 // If not moved enough, stay in PendingSnap (still showing snap preview)
             }
             Some(DragOp::Moving) => {
-                let bounds = self.bounds;
                 let start_rect = match self.drag_start_rect {
                     Some(r) => r,
                     None => { self.last_pointer = Some(pos); return; }
@@ -305,7 +314,7 @@ impl SelectionState {
                 let total_dx = (pos.0 - start.0) as i32;
                 let total_dy = (pos.1 - start.1) as i32;
                 let moved = start_rect.translate(total_dx, total_dy);
-                let clamped = match bounds {
+                let clamped = match self.move_bounds_for(&start_rect) {
                     Some(b) => {
                         let x = moved.x.clamp(b.x, (b.right() - moved.w).max(b.x));
                         let y = moved.y.clamp(b.y, (b.bottom() - moved.h).max(b.y));
@@ -519,9 +528,9 @@ mod tests {
     }
 
     #[test]
-    fn move_clamped_by_bounds() {
+    fn move_clamped_by_screen_rects() {
         let mut s = SelectionState::new();
-        s.bounds = Some(Rect::new(0, 0, 300, 300));
+        s.screen_rects = vec![Rect::new(0, 0, 300, 300)];
         // 200x200 rect at (100,100), trying to move left past x=0
         s.selection = Selection::Confirmed { rect: Rect::new(100, 100, 200, 200) };
 
@@ -532,6 +541,59 @@ mod tests {
             Selection::Confirmed { rect } => {
                 assert_eq!(rect.x, 0); // clamped
                 assert_eq!(rect.w, 200); // size preserved
+            }
+            _ => panic!("expected Confirmed"),
+        }
+    }
+
+    #[test]
+    fn move_blocked_by_dead_zone_staggered_monitors() {
+        // Two 3840x2160 monitors: left at (0,0), right at (3840,-500)
+        // Dead zone above right monitor: (3840, -500) to (7680, 0) is screen,
+        // but (0, 2160) to (3840, 1660) is dead zone below left monitor.
+        let mut s = SelectionState::new();
+        s.screen_rects = vec![
+            Rect::new(0, 0, 3840, 2160),         // left monitor
+            Rect::new(3840, -500, 3840, 2160),    // right monitor (offset up)
+        ];
+
+        // Selection on left monitor near bottom edge
+        s.selection = Selection::Confirmed { rect: Rect::new(1000, 1800, 500, 300) };
+        s.on_pointer_press((1100.0, 1900.0), BTN_LEFT);
+
+        // Try to move down into dead zone (below left monitor's y=2160)
+        s.on_pointer_motion((1100.0, 2500.0), None);
+        match s.selection {
+            Selection::Confirmed { rect } => {
+                // Bottom of selection should be clamped to left monitor bottom (2160)
+                assert_eq!(rect.bottom(), 2160);
+                assert_eq!(rect.h, 300);
+            }
+            _ => panic!("expected Confirmed"),
+        }
+    }
+
+    #[test]
+    fn cross_screen_selection_clamped_to_spanning_bounds() {
+        // Two 3840x2160 monitors: left at (0,0), right at (3840,-500)
+        let mut s = SelectionState::new();
+        s.screen_rects = vec![
+            Rect::new(0, 0, 3840, 2160),
+            Rect::new(3840, -500, 3840, 2160),
+        ];
+
+        // Selection spanning both monitors
+        let rect = Rect::new(3500, 0, 800, 300);
+        s.selection = Selection::Confirmed { rect };
+        s.on_pointer_press((3600.0, 100.0), BTN_LEFT);
+
+        // Move up — should be clamped to top of right monitor (-500),
+        // not the top of left monitor (0), since this spans both screens
+        s.on_pointer_motion((3600.0, -600.0), None);
+        match s.selection {
+            Selection::Confirmed { rect } => {
+                // Bounding box of both screens: top = -500
+                assert_eq!(rect.y, -500);
             }
             _ => panic!("expected Confirmed"),
         }

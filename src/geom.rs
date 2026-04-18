@@ -68,6 +68,15 @@ impl Rect {
         Some(Rect { x, y, w: right - x, h: bottom - y })
     }
 
+    /// Minimum bounding rectangle containing both self and other.
+    pub fn bounding(&self, other: &Rect) -> Rect {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Rect { x, y, w: right - x, h: bottom - y }
+    }
+
     pub fn translate(&self, dx: i32, dy: i32) -> Rect {
         Rect { x: self.x + dx, y: self.y + dy, w: self.w, h: self.h }
     }
