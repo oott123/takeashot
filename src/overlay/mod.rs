@@ -418,7 +418,8 @@ impl OverlayState {
     }
 
     /// Compose the final image from the current selection + annotations,
-    /// copy to clipboard, and set exit_requested.
+    /// then exit the overlay. Encoding and clipboard write happen in a
+    /// background thread so the overlay closes immediately.
     fn confirm_and_exit(&mut self) {
         match self.selection.on_enter() {
             crate::selection::ConfirmAction::Confirmed { rect } => {
@@ -439,22 +440,11 @@ impl OverlayState {
                     &self.gpu, &output_infos, &self.captured, &self.annotations, rect,
                 ) {
                     Ok(img) => {
-                        let mut png_buf = Vec::new();
-                        let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
-                        match image::ImageEncoder::write_image(
-                            encoder,
-                            img.as_raw(),
-                            img.width(),
-                            img.height(),
-                            image::ExtendedColorType::Rgba8,
-                        ) {
-                            Ok(()) => {
-                                if let Err(e) = crate::clipboard::copy_to_clipboard(&png_buf) {
-                                    tracing::error!("clipboard copy failed: {e:#}");
-                                }
+                        std::thread::spawn(move || {
+                            if let Err(e) = crate::clipboard::copy_to_clipboard(img) {
+                                tracing::error!("clipboard copy failed: {e:#}");
                             }
-                            Err(e) => tracing::error!("PNG encode failed: {e:#}"),
-                        }
+                        });
                     }
                     Err(e) => tracing::error!("compose failed: {e:#}"),
                 }
