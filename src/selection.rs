@@ -259,13 +259,10 @@ impl SelectionState {
     /// `snap_rect`: the window under the pointer (for snap preview), if any.
     /// Only used when no drag is active and selection is None/Pending.
     pub fn on_pointer_motion(&mut self, pos: (f64, f64), snap_rect: Option<Rect>) {
-        let prev = match self.last_pointer {
+        let _prev = match self.last_pointer {
             Some(p) => p,
             None => { self.last_pointer = Some(pos); return; }
         };
-
-        let dx = (pos.0 - prev.0) as i32;
-        let dy = (pos.1 - prev.1) as i32;
 
         match self.drag {
             Some(DragOp::Creating) => {
@@ -299,13 +296,15 @@ impl SelectionState {
                 // If not moved enough, stay in PendingSnap (still showing snap preview)
             }
             Some(DragOp::Moving) => {
-                // Pre-compute clamped rect to avoid borrow conflict
                 let bounds = self.bounds;
-                let cur = match &self.selection {
-                    Selection::Confirmed { rect } => *rect,
-                    _ => { self.last_pointer = Some(pos); return; }
+                let start_rect = match self.drag_start_rect {
+                    Some(r) => r,
+                    None => { self.last_pointer = Some(pos); return; }
                 };
-                let moved = cur.translate(dx, dy);
+                let start = self.drag_start_pos.unwrap();
+                let total_dx = (pos.0 - start.0) as i32;
+                let total_dy = (pos.1 - start.1) as i32;
+                let moved = start_rect.translate(total_dx, total_dy);
                 let clamped = match bounds {
                     Some(b) => {
                         let x = moved.x.clamp(b.x, (b.right() - moved.w).max(b.x));
