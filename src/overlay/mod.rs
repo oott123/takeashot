@@ -171,17 +171,23 @@ impl OverlayState {
         self.selection.selection.rect().copied()
     }
 
+    /// Find the output that should display the toolbar for the given global selection rect.
+    /// Uses the selection center to determine ownership — this always lands inside the
+    /// correct output even when the selection edge is flush with the screen boundary.
+    fn find_toolbar_output_idx(&self, sel: Rect) -> Option<usize> {
+        let cx = sel.x + sel.w / 2;
+        let cy = sel.y + sel.h / 2;
+        self.overlays.iter().position(|o| {
+            cx >= o.output_pos.0 && cx < o.output_pos.0 + o.width as i32 &&
+            cy >= o.output_pos.1 && cy < o.output_pos.1 + o.height as i32
+        })
+    }
+
     /// Compute the toolbar bounding rect in global logical coordinates.
     /// Uses the same positioning logic as render_all().
     fn compute_toolbar_rect(&self) -> Option<Rect> {
         let global_rect = self.global_selection_rect()?;
-        // Find the output that contains the toolbar's preferred position
-        let tb_x = (global_rect.right() - 360).max(0);
-        let tb_y = global_rect.bottom() + 4;
-        let overlay = self.overlays.iter().find(|o| {
-            tb_x >= o.output_pos.0 && tb_x < o.output_pos.0 + o.width as i32 &&
-            tb_y >= o.output_pos.1 && tb_y < o.output_pos.1 + o.height as i32
-        })?;
+        let overlay = self.overlays.get(self.find_toolbar_output_idx(global_rect)?)?;
         crate::ui::toolbar::toolbar_rect(
             Some(global_rect),
             overlay.output_pos,
@@ -192,16 +198,9 @@ impl OverlayState {
     /// Update selection uniform buffers + vertex buffers, then render all overlays.
     fn render_all(&mut self) {
         // Determine which output should display the toolbar.
-        // The toolbar is positioned below-right of the selection, so find the output
-        // that contains the toolbar's preferred position.
         let global_rect = self.global_selection_rect();
         let toolbar_output_idx = global_rect.and_then(|sel| {
-            let tb_x = (sel.right() - 360).max(0);
-            let tb_y = sel.bottom() + 4;
-            self.overlays.iter().position(|o| {
-                tb_x >= o.output_pos.0 && tb_x < o.output_pos.0 + o.width as i32 &&
-                tb_y >= o.output_pos.1 && tb_y < o.output_pos.1 + o.height as i32
-            })
+            self.find_toolbar_output_idx(sel)
         });
 
         // Get the toolbar output's parameters for egui
