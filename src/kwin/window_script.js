@@ -1,6 +1,8 @@
 var list = [];
 var windows = workspace.stackingOrder;
-for (var i = 0; i < windows.length; i++) {
+// Reverse iteration: stackingOrder[0] = bottom, stackingOrder[last] = top.
+// We push in reverse so list[0] = topmost window for front-to-back matching.
+for (var i = windows.length - 1; i >= 0; i--) {
     var w = windows[i];
     if (w.normalWindow && !w.minimized) {
         list.push({

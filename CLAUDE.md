@@ -62,3 +62,6 @@ When final-composing the screenshot, each output's physical buffer is stitched b
 ## Implementation status vs plan
 
 `plan.md` describes an 8-milestone rewrite. As of the current tree: single-instance, hotkey, capture, and the overlay with a working selection state machine + wgpu rendering are in place. Toolbar (egui), annotations, window snapping, clipboard export, and tray are still TODO — their module directories exist but are empty. When adding these, follow the layout in `plan.md` rather than inventing a new structure.
+
+
+这个项目由 python 项目改写而来，老项目在 .references/takeashot/ 里，但是不完全一样，搞不明白的细节可以看看
