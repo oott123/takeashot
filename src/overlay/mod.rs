@@ -189,8 +189,12 @@ impl OverlayState {
     }
 
     /// Compute the toolbar bounding rect in global logical coordinates.
-    /// Uses the same positioning logic as render_all().
+    /// Returns None when the selection is not Confirmed — the toolbar
+    /// must not appear during snap preview or drag-creation.
     fn compute_toolbar_rect(&self) -> Option<Rect> {
+        if !self.selection.selection.is_confirmed() {
+            return None;
+        }
         let global_rect = self.global_selection_rect()?;
         let overlay = self.overlays.get(self.find_toolbar_output_idx(global_rect)?)?;
         crate::ui::toolbar::toolbar_rect(
@@ -204,7 +208,9 @@ impl OverlayState {
     fn render_all(&mut self) {
         // Determine which output should display the toolbar.
         let global_rect = self.global_selection_rect();
-        let toolbar_output_idx = global_rect.and_then(|sel| {
+        // Toolbar is only shown for confirmed selections — not during snap preview or drag-creation.
+        let confirmed_rect = if self.selection.selection.is_confirmed() { global_rect } else { None };
+        let toolbar_output_idx = confirmed_rect.and_then(|sel| {
             self.find_toolbar_output_idx(sel)
         });
 
@@ -228,7 +234,7 @@ impl OverlayState {
             &self.gpu.device,
             &self.gpu.queue,
             self.tool,
-            global_rect,
+            confirmed_rect,
             tb_output_pos,
             tb_output_size,
         ) {
@@ -495,6 +501,15 @@ impl OverlayState {
 
     /// Tool-aware pointer press handler.
     fn handle_pointer_press(&mut self, pos: (f64, f64), button: u32, time: u32) {
+        // In None/Pending/Creating mode, the only interaction is confirm-snap or drag-create.
+        // Tool routing is irrelevant — bypass it entirely.
+        if !self.selection.selection.is_confirmed() {
+            if self.selection.on_pointer_press(pos, button) {
+                self.exit_requested = true;
+            }
+            return;
+        }
+
         // Double-click detection: left click inside confirmed selection with Move tool
         if button == 0x110 && self.tool == Tool::Move && self.selection.selection.is_confirmed() {
             let inside = self.selection.selection.rect().map_or(false, |r| {
@@ -571,25 +586,34 @@ impl OverlayState {
         // Always forward to selection (it needs to track pointer for cursor)
         self.selection.on_pointer_motion(pos, snap_rect);
 
-        // Also forward to annotations if drawing or editing
-        match self.tool {
-            Tool::Move => {}
-            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
-                self.annotations.on_pointer_motion(pos);
+        // Only forward to annotations when selection is confirmed
+        if self.selection.selection.is_confirmed() {
+            match self.tool {
+                Tool::Move => {}
+                Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
+                    self.annotations.on_pointer_motion(pos);
+                }
             }
         }
     }
 
     /// Tool-aware pointer release handler.
     fn handle_pointer_release(&mut self, pos: (f64, f64), button: u32) {
+        // Check whether selection was confirmed BEFORE release processing,
+        // so that a PendingSnap→Confirmed transition doesn't forward an
+        // unmatched release to annotations.
+        let was_confirmed = self.selection.selection.is_confirmed();
+
         // Always forward to selection
         self.selection.on_pointer_release(pos, button);
 
-        // Also forward to annotations if drawing or editing
-        match self.tool {
-            Tool::Move => {}
-            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
-                self.annotations.on_pointer_release(pos, button);
+        // Only forward to annotations when selection was already confirmed
+        if was_confirmed {
+            match self.tool {
+                Tool::Move => {}
+                Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
+                    self.annotations.on_pointer_release(pos, button);
+                }
             }
         }
     }
