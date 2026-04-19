@@ -108,6 +108,9 @@ impl DualBlur {
     /// `width`/`height` are the source texture dimensions.
     /// Returns the bind group for the blurred result (texture view + sampler).
     pub fn blur(&self, source_view: &TextureView, width: u32, height: u32) -> BindGroup {
+        let start = std::time::Instant::now();
+        tracing::info!("blur start: {width}x{height}, {BLUR_PASSES} passes");
+
         let mut down_textures: Vec<(Texture, TextureView, BindGroup)> = Vec::with_capacity(BLUR_PASSES as usize);
         let mut up_textures: Vec<(Texture, TextureView)> = Vec::with_capacity(BLUR_PASSES as usize);
 
@@ -148,6 +151,8 @@ impl DualBlur {
             if i > 0 {
                 down_textures[i].2 = bg;
             } else {
+                let elapsed = start.elapsed();
+                tracing::info!("blur done: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
                 return bg;
             }
         }
