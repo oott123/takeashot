@@ -150,7 +150,7 @@ impl OverlayState {
     ) {
         let surface = self.compositor.create_surface(qh);
         let layer = self.layer_shell.create_layer_surface(
-            qh, surface, Layer::Overlay, Some("takeashot"), output,
+            qh, surface, Layer::Overlay, Some("on-screen-display"), output,
         );
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_exclusive_zone(-1);
