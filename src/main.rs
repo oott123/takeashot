@@ -26,6 +26,10 @@ struct Args {
     /// Smoke test: skip single-instance check, show overlay, auto-exit after 3 seconds.
     #[arg(long)]
     smoke: bool,
+
+    /// Force workspace capture instead of per-screen capture (for testing).
+    #[arg(long)]
+    use_workspace: bool,
 }
 
 #[tokio::main]
@@ -75,7 +79,7 @@ async fn main() -> Result<()> {
     }
 
     // Create the App and a handle for D-Bus to call back into.
-    let (app, handle) = app::App::new(dbus_conn.clone(), args.now);
+    let (app, handle) = app::App::new(dbus_conn.clone(), args.now, args.use_workspace);
 
     // Try to register our D-Bus service. If another instance is already
     // running, call its activate() and exit.

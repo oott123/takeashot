@@ -382,7 +382,7 @@ impl OverlayState {
                 annotations.annotations(),
                 drawing_shape,
                 drawing_transform,
-                None,
+                drawing_shape.map(|_| annotations.drawing_color()),
                 annotations.drawing_stroke_width(),
                 annotations.drawing_filled(),
                 if selected_idx.is_some() { &edit_handles } else { &[] },
@@ -1012,8 +1012,9 @@ fn get_display_ptr(conn: &Connection) -> *mut std::ffi::c_void {
 pub fn run(
     dbus_conn: zbus::Connection,
     windows: Vec<crate::kwin::windows::WindowInfo>,
+    use_workspace: bool,
 ) -> Result<()> {
-    run_inner(dbus_conn, windows, None)
+    run_inner(dbus_conn, windows, None, use_workspace)
 }
 
 /// Run the overlay event loop with an auto-exit timeout.
@@ -1022,13 +1023,14 @@ pub fn run_with_timeout(
     windows: Vec<crate::kwin::windows::WindowInfo>,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    run_inner(dbus_conn, windows, Some(timeout))
+    run_inner(dbus_conn, windows, Some(timeout), false)
 }
 
 fn run_inner(
     dbus_conn: zbus::Connection,
     windows: Vec<crate::kwin::windows::WindowInfo>,
     timeout: Option<std::time::Duration>,
+    use_workspace: bool,
 ) -> Result<()> {
     let conn = Connection::connect_to_env().context("failed to connect to Wayland display")?;
     let display_ptr = get_display_ptr(&conn);
@@ -1067,12 +1069,25 @@ fn run_inner(
     tracing::info!("initial roundtrip for output info ({rounds} rounds)");
 
     let mut output_names: Vec<String> = Vec::new();
+    let mut output_infos: Vec<capture::OutputCaptureInfo> = Vec::new();
     for attempt in 0..5 {
-        output_names = state.output_state.outputs()
+        let infos: Vec<_> = state.output_state.outputs()
             .filter_map(|o| state.output_state.info(&o))
-            .filter_map(|info| info.name.clone())
+            .filter_map(|info| {
+                let name = info.name.clone()?;
+                let (x, y) = info.logical_position.unwrap_or((0, 0));
+                let (w, h) = info.logical_size.unwrap_or((1920, 1080));
+                let scale = info.scale_factor;
+                Some(capture::OutputCaptureInfo {
+                    name, logical_x: x, logical_y: y,
+                    logical_w: w as i32, logical_h: h as i32,
+                    scale_factor: scale,
+                })
+            })
             .collect();
+        output_names = infos.iter().map(|i| i.name.clone()).collect();
         if !output_names.is_empty() {
+            output_infos = infos;
             break;
         }
         tracing::info!("output names not yet available, dispatching ({attempt})...");
@@ -1082,7 +1097,7 @@ fn run_inner(
 
     state.captured = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(
-            capture::capture_all(&dbus_conn, &output_names)
+            capture::capture_all(&dbus_conn, &output_infos, use_workspace)
         )
     })?;
 

@@ -14,11 +14,13 @@ pub struct App {
     window_data_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<String>>>>,
     /// If true, exit after the first session completes.
     single_session: bool,
+    /// If true, force workspace capture instead of per-screen capture.
+    use_workspace: bool,
 }
 
 impl App {
     /// Create a new App and a SessionHandle for the D-Bus service.
-    pub fn new(dbus_conn: zbus::Connection, single_session: bool) -> (Self, SessionHandle) {
+    pub fn new(dbus_conn: zbus::Connection, single_session: bool, use_workspace: bool) -> (Self, SessionHandle) {
         let (activate_tx, trigger_rx) = watch::channel(false);
         let window_data_tx = Arc::new(Mutex::new(None));
 
@@ -27,6 +29,7 @@ impl App {
             dbus_conn,
             window_data_tx: window_data_tx.clone(),
             single_session,
+            use_workspace,
         };
 
         let handle = SessionHandle {
@@ -75,7 +78,7 @@ impl App {
             Vec::new()
         });
 
-        crate::overlay::run(self.dbus_conn.clone(), windows)?;
+        crate::overlay::run(self.dbus_conn.clone(), windows, self.use_workspace)?;
         tracing::info!("overlay closed");
         Ok(())
     }

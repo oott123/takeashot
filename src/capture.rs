@@ -12,21 +12,40 @@ pub struct CapturedScreen {
     pub stride: u32,
 }
 
+/// Output geometry needed for cropping a workspace capture to per-output screens.
+pub struct OutputCaptureInfo {
+    pub name: String,
+    pub logical_x: i32,
+    pub logical_y: i32,
+    pub logical_w: i32,
+    pub logical_h: i32,
+    pub scale_factor: i32,
+}
+
 /// Capture each named screen individually using KWin's CaptureScreen.
-/// Falls back to a single workspace capture if per-screen fails.
-pub async fn capture_all(conn: &zbus::Connection, output_names: &[String]) -> Result<Vec<CapturedScreen>> {
-    if output_names.is_empty() {
-        tracing::warn!("no output names provided, falling back to workspace capture");
-        return capture_workspace_fallback(conn).await;
+/// Falls back to a single workspace capture (cropped per output) if per-screen fails.
+/// When `force_workspace` is true, skips per-screen capture entirely.
+pub async fn capture_all(
+    conn: &zbus::Connection,
+    output_infos: &[OutputCaptureInfo],
+    force_workspace: bool,
+) -> Result<Vec<CapturedScreen>> {
+    if force_workspace || output_infos.is_empty() {
+        if output_infos.is_empty() {
+            tracing::warn!("no output info provided, falling back to workspace capture");
+        } else {
+            tracing::warn!("--use-workspace: forcing workspace capture instead of per-screen capture");
+        }
+        return capture_workspace_fallback(conn, output_infos).await;
     }
 
-    let mut screens = Vec::with_capacity(output_names.len());
-    for name in output_names {
-        match screenshot::capture_screen(conn, name).await {
+    let mut screens = Vec::with_capacity(output_infos.len());
+    for info in output_infos {
+        match screenshot::capture_screen(conn, &info.name).await {
             Ok((bgra, meta)) => {
-                tracing::info!("captured screen '{name}': {}x{}, stride={}", meta.width, meta.height, meta.stride);
+                tracing::info!("captured screen '{}': {}x{}, stride={}", info.name, meta.width, meta.height, meta.stride);
                 screens.push(CapturedScreen {
-                    name: name.clone(),
+                    name: info.name.clone(),
                     bgra,
                     width: meta.width,
                     height: meta.height,
@@ -34,8 +53,8 @@ pub async fn capture_all(conn: &zbus::Connection, output_names: &[String]) -> Re
                 });
             }
             Err(e) => {
-                tracing::warn!("CaptureScreen('{name}') failed: {e:#}, trying workspace fallback");
-                return capture_workspace_fallback(conn).await;
+                tracing::warn!("CaptureScreen('{}') failed: {e:#}, falling back to workspace capture — each screen will show a cropped region of the full workspace", info.name);
+                return capture_workspace_fallback(conn, output_infos).await;
             }
         }
     }
@@ -46,7 +65,10 @@ pub async fn capture_all(conn: &zbus::Connection, output_names: &[String]) -> Re
     Ok(screens)
 }
 
-async fn capture_workspace_fallback(conn: &zbus::Connection) -> Result<Vec<CapturedScreen>> {
+async fn capture_workspace_fallback(
+    conn: &zbus::Connection,
+    output_infos: &[OutputCaptureInfo],
+) -> Result<Vec<CapturedScreen>> {
     let (bgra, meta) = screenshot::capture_workspace(conn)
         .await
         .context("workspace capture failed")?;
@@ -56,13 +78,66 @@ async fn capture_workspace_fallback(conn: &zbus::Connection) -> Result<Vec<Captu
         meta.width, meta.height, meta.stride, meta.format
     );
 
-    Ok(vec![CapturedScreen {
-        name: "workspace".to_owned(),
-        bgra,
-        width: meta.width,
-        height: meta.height,
-        stride: meta.stride,
-    }])
+    if output_infos.is_empty() {
+        return Ok(vec![CapturedScreen {
+            name: "workspace".to_owned(),
+            bgra,
+            width: meta.width,
+            height: meta.height,
+            stride: meta.stride,
+        }]);
+    }
+
+    // Crop the workspace image to each output's region.
+    output_infos
+        .iter()
+        .map(|info| crop_workspace_to_output(&bgra, &meta, info))
+        .collect()
+}
+
+fn crop_workspace_to_output(
+    workspace_bgra: &[u8],
+    workspace_meta: &screenshot::CaptureMetadata,
+    output: &OutputCaptureInfo,
+) -> Result<CapturedScreen> {
+    let scale = output.scale_factor.max(1) as u32;
+    let px = (output.logical_x as u32) * scale;
+    let py = (output.logical_y as u32) * scale;
+    let pw = (output.logical_w as u32) * scale;
+    let ph = (output.logical_h as u32) * scale;
+
+    if px + pw > workspace_meta.width || py + ph > workspace_meta.height {
+        anyhow::bail!(
+            "output '{}' region ({px},{py}+{pw}x{ph}) exceeds workspace ({}x{})",
+            output.name, workspace_meta.width, workspace_meta.height
+        );
+    }
+
+    let src_stride = workspace_meta.stride as usize;
+    let dst_stride = pw as usize * 4;
+    let mut cropped = Vec::with_capacity(ph as usize * dst_stride);
+
+    for y in 0..ph {
+        let src_offset = (py + y) as usize * src_stride + px as usize * 4;
+        let src_end = src_offset + dst_stride;
+        if src_end > workspace_bgra.len() {
+            anyhow::bail!("workspace data truncated at row {}", py + y);
+        }
+        cropped.extend_from_slice(&workspace_bgra[src_offset..src_end]);
+    }
+
+    tracing::info!(
+        "cropped workspace to output '{}': ({px},{py}) {pw}x{ph}",
+        output.name
+    );
+
+    Ok(CapturedScreen {
+        name: output.name.clone(),
+        bgra: cropped,
+        width: pw,
+        height: ph,
+        stride: pw * 4,
+    })
 }
 
 /// Convert BGRA raw data to an `image::RgbaImage` (RGBA).
