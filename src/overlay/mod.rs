@@ -418,6 +418,12 @@ impl OverlayState {
         }
 
         self.dirty = false;
+
+        // If egui has active animations (e.g. toolbar fade-in), keep requesting
+        // frames so the compositor's frame callback triggers another render.
+        if self.egui.ctx.has_requested_repaint() {
+            self.dirty = true;
+        }
     }
 
     /// Update cursor shape based on tool + selection state + pointer position.
