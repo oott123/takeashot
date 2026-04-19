@@ -26,22 +26,14 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
-    let ts = 5.0 / vec2<f32>(textureDimensions(tex));
+    // Kawase / dual-filter downsample (Bjørge 2015).
+    // Taps land on half-pixel offsets so each bilinear fetch averages 4 texels.
+    let hp = 0.5 / vec2<f32>(textureDimensions(tex));
 
-    // Wide 13-tap cross + 4 diagonal, 5-texel offset
-    let c   = textureSample(tex, samp, in.uv);
-    let n   = textureSample(tex, samp, in.uv + vec2( 0.0, -ts.y));
-    let s   = textureSample(tex, samp, in.uv + vec2( 0.0,  ts.y));
-    let e   = textureSample(tex, samp, in.uv + vec2( ts.x,  0.0));
-    let w   = textureSample(tex, samp, in.uv + vec2(-ts.x,  0.0));
-    let nw  = textureSample(tex, samp, in.uv + vec2(-ts.x, -ts.y));
-    let ne  = textureSample(tex, samp, in.uv + vec2( ts.x, -ts.y));
-    let se  = textureSample(tex, samp, in.uv + vec2( ts.x,  ts.y));
-    let sw  = textureSample(tex, samp, in.uv + vec2(-ts.x,  ts.y));
-    let nn  = textureSample(tex, samp, in.uv + vec2( 0.0, -ts.y * 2.0));
-    let ss  = textureSample(tex, samp, in.uv + vec2( 0.0,  ts.y * 2.0));
-    let ee  = textureSample(tex, samp, in.uv + vec2( ts.x * 2.0,  0.0));
-    let ww  = textureSample(tex, samp, in.uv + vec2(-ts.x * 2.0,  0.0));
-
-    return c * 0.16 + (n + s + e + w) * 0.1 + (nw + ne + se + sw) * 0.07 + (nn + ss + ee + ww) * 0.05;
+    var s = textureSample(tex, samp, in.uv) * 4.0;
+    s += textureSample(tex, samp, in.uv + vec2( hp.x,  hp.y));
+    s += textureSample(tex, samp, in.uv + vec2(-hp.x,  hp.y));
+    s += textureSample(tex, samp, in.uv + vec2( hp.x, -hp.y));
+    s += textureSample(tex, samp, in.uv + vec2(-hp.x, -hp.y));
+    return s / 8.0;
 }

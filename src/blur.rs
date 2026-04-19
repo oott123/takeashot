@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use wgpu::*;
 
-const BLUR_PASSES: u32 = 10;
+const BLUR_PASSES: u32 = 3;
 
 pub struct DualBlur {
     device: Arc<Device>,
@@ -149,7 +149,9 @@ impl DualBlur {
 
             let bg = self.make_bind_group(&up_textures.last().unwrap().1);
             if i > 0 {
-                down_textures[i].2 = bg;
+                // Feed this upsample's result into the next iteration's input slot
+                // so the upsample chain actually chains (Kawase dual-filter).
+                down_textures[i - 1].2 = bg;
             } else {
                 let elapsed = start.elapsed();
                 tracing::info!("blur done: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
