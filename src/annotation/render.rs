@@ -3,7 +3,7 @@ use crate::geom::Rect;
 use crate::overlay::renderer::{ColoredVertex, TexturedVertex};
 use glam::{Affine2, Vec2};
 use lyon_path::Path;
-use lyon_tessellation::{StrokeOptions, StrokeTessellator, BuffersBuilder, VertexBuffers};
+use lyon_tessellation::{StrokeOptions, StrokeTessellator, FillTessellator, FillOptions, BuffersBuilder, VertexBuffers};
 
 /// Tessellate annotations into vertex data for the handles pipeline.
 ///
@@ -23,6 +23,8 @@ pub fn tessellate_annotations(
     drawing_shape: Option<&Shape>,
     drawing_transform: Option<Affine2>,
     drawing_color: Option<[f32; 4]>,
+    drawing_stroke_width: f32,
+    drawing_filled: bool,
     edit_handles: &[EditHandlePos],
     selected_oriented: Option<OrientedRect>,
     output_rect: Rect,
@@ -43,14 +45,14 @@ pub fn tessellate_annotations(
 
     // Tessellate finalized annotations
     for ann in annotations {
-        tessellate_one(&ann.shape, ann.transform, ann.color, ann.stroke_width, ox, oy, sf, sw, sh, &mut vertices);
+        tessellate_one(&ann.shape, ann.transform, ann.color, ann.stroke_width, ann.filled, ox, oy, sf, sw, sh, &mut vertices);
     }
 
     // Tessellate in-progress drawing
     if let Some(shape) = drawing_shape {
         let transform = drawing_transform.unwrap_or(glam::Affine2::IDENTITY);
         let color = drawing_color.unwrap_or([1.0, 0.2, 0.2, 1.0]);
-        tessellate_one(shape, transform, color, 3.0, ox, oy, sf, sw, sh, &mut vertices);
+        tessellate_one(shape, transform, color, drawing_stroke_width, drawing_filled, ox, oy, sf, sw, sh, &mut vertices);
     }
 
     // Dashed border around selected annotation (alternating white and gray)
@@ -132,6 +134,7 @@ fn tessellate_one(
     transform: Affine2,
     color: [f32; 4],
     stroke_width: f32,
+    filled: bool,
     ox: f32,
     oy: f32,
     sf: f32,
@@ -151,12 +154,20 @@ fn tessellate_one(
 
     let mut mesh: VertexBuffers<AnnotVertex, u16> = VertexBuffers::new();
 
-    let mut tessellator = StrokeTessellator::new();
-    let options = StrokeOptions::default().with_line_width(stroke_width);
-
-    if tessellator.tessellate_path(&path, &options, &mut BuffersBuilder::new(&mut mesh, AnnotVertexCtor)).is_err() {
-        return;
-    }
+    let ok = if filled && matches!(shape, Shape::Rect { .. } | Shape::Ellipse { .. }) {
+        FillTessellator::new().tessellate_path(
+            &path,
+            &FillOptions::default(),
+            &mut BuffersBuilder::new(&mut mesh, AnnotVertexCtor),
+        ).is_ok()
+    } else {
+        StrokeTessellator::new().tessellate_path(
+            &path,
+            &StrokeOptions::default().with_line_width(stroke_width),
+            &mut BuffersBuilder::new(&mut mesh, AnnotVertexCtor),
+        ).is_ok()
+    };
+    if !ok { return; }
 
     // Transform vertices and add to output
     for chunk in mesh.indices.chunks(3) {
@@ -186,6 +197,14 @@ struct AnnotVertexCtor;
 
 impl lyon_tessellation::StrokeVertexConstructor<AnnotVertex> for AnnotVertexCtor {
     fn new_vertex(&mut self, attr: lyon_tessellation::StrokeVertex) -> AnnotVertex {
+        AnnotVertex {
+            pos: (attr.position().x, attr.position().y),
+        }
+    }
+}
+
+impl lyon_tessellation::FillVertexConstructor<AnnotVertex> for AnnotVertexCtor {
+    fn new_vertex(&mut self, attr: lyon_tessellation::FillVertex) -> AnnotVertex {
         AnnotVertex {
             pos: (attr.position().x, attr.position().y),
         }
@@ -443,6 +462,7 @@ pub fn tessellate_mosaic_quads(
             transform,
             color: [0.0; 4],
             stroke_width: 0.0,
+            filled: false,
         };
         if let Some(verts) = build_mosaic_quad(&fake_ann, ox, oy, sf, sw, sh) {
             quads.push(MosaicQuad { blur_passes: *blur_passes, vertices: verts });

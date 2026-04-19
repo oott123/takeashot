@@ -40,6 +40,34 @@ impl Tool {
 pub const BLUR_PASSES_MIN: u32 = 1;
 pub const BLUR_PASSES_MAX: u32 = 8;
 
+/// Color presets for annotation tools (RGBA float arrays).
+pub const COLOR_PRESETS: [[f32; 4]; 3] = [
+    [0.0, 0.0, 0.0, 1.0],  // Black
+    [1.0, 1.0, 1.0, 1.0],  // White
+    [1.0, 0.2, 0.2, 1.0],  // Red
+];
+
+/// Stroke width presets (logical pixels).
+pub const STROKE_WIDTH_PRESETS: [f32; 4] = [1.0, 3.0, 5.0, 8.0];
+
+/// Values displayed in the toolbar options row.
+pub struct ToolbarDisplay {
+    pub color: [f32; 4],
+    pub stroke_width: f32,
+    pub filled: bool,
+    pub blur_passes: u32,
+}
+
+/// Changes emitted by the toolbar in one frame.
+#[derive(Default)]
+pub struct ToolbarChanges {
+    pub tool: Option<Tool>,
+    pub color: Option<[f32; 4]>,
+    pub stroke_width: Option<f32>,
+    pub filled: Option<bool>,
+    pub blur_passes: Option<u32>,
+}
+
 /// Toolbar pixel dimensions (width, height).
 /// Height accounts for the two rows (tool buttons + tool-specific options).
 pub const TOOLBAR_WIDTH: f32 = 368.0;
@@ -118,16 +146,16 @@ pub fn place_toolbar(
 }
 
 /// Draw the toolbar using egui. Tool/option changes are written into `ctx.data_mut`
-/// and must be drained with `take_tool_change` / `take_blur_passes_change`.
+/// and must be drained with `take_tool_change` / `take_*_change`.
 ///
 /// `selection_rect` is in global logical coordinates.
 /// `output_pos` is the output's global position.
 /// `output_size` is the output's logical size.
-/// `blur_passes` is the current mosaic blur-pass count (shown in the Mosaic options row).
+/// `display` holds the current values shown in the options row.
 pub fn draw_toolbar(
     ctx: &egui::Context,
     active_tool: Tool,
-    blur_passes: u32,
+    display: &ToolbarDisplay,
     selection_rect: Option<Rect>,
     output_pos: (i32, i32),
     output_size: (u32, u32),
@@ -209,7 +237,7 @@ pub fn draw_toolbar(
                     });
 
                     // Row 2: tool-specific options
-                    draw_tool_options_row(ui, ctx, active_tool, blur_passes);
+                    draw_tool_options_row(ui, ctx, active_tool, display);
                 });
             });
     });
@@ -221,7 +249,7 @@ fn draw_tool_options_row(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     active_tool: Tool,
-    blur_passes: u32,
+    display: &ToolbarDisplay,
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
@@ -229,29 +257,144 @@ fn draw_tool_options_row(
         ui.set_min_height(26.0);
 
         match active_tool {
+            Tool::Pen | Tool::Line => {
+                draw_color_buttons(ui, ctx, display.color);
+                ui.separator();
+                draw_stroke_width_buttons(ui, ctx, display.stroke_width);
+            }
+            Tool::Rect | Tool::Ellipse => {
+                draw_color_buttons(ui, ctx, display.color);
+                ui.separator();
+                draw_stroke_width_buttons(ui, ctx, display.stroke_width);
+                draw_fill_toggle(ui, ctx, display.filled);
+            }
             Tool::Mosaic => {
                 ui.label(
                     egui::RichText::new("Blur")
                         .color(egui::Color32::BLACK)
                         .size(11.0),
                 );
-                let mut val = blur_passes.clamp(BLUR_PASSES_MIN, BLUR_PASSES_MAX);
+                let mut val = display.blur_passes.clamp(BLUR_PASSES_MIN, BLUR_PASSES_MAX);
                 let slider = egui::Slider::new(&mut val, BLUR_PASSES_MIN..=BLUR_PASSES_MAX)
                     .integer()
                     .show_value(true);
                 let response = ui.add(slider);
-                if response.changed() && val != blur_passes {
+                if response.changed() && val != display.blur_passes {
                     ctx.data_mut(|data| {
                         data.insert_temp(egui::Id::new(BLUR_PASSES_CHANGE_KEY), val)
                     });
                 }
             }
-            _ => {
-                // No options for other tools yet. Placeholder keeps the row the same size.
+            Tool::Move => {
                 ui.label(" ");
             }
         }
     });
+}
+
+fn draw_color_buttons(ui: &mut egui::Ui, ctx: &egui::Context, current: [f32; 4]) {
+    for &preset in &COLOR_PRESETS {
+        let (rect, response) = ui.allocate_at_least(
+            egui::vec2(20.0, 20.0),
+            egui::Sense::click(),
+        );
+        if ui.is_rect_visible(rect) {
+            let is_selected = color_eq(preset, current);
+            let border = if is_selected {
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(0x46, 0x87, 0xDB))
+            } else {
+                egui::Stroke::new(1.0, egui::Color32::GRAY)
+            };
+            let fill = egui::Color32::from_rgba_unmultiplied(
+                (preset[0] * 255.0) as u8,
+                (preset[1] * 255.0) as u8,
+                (preset[2] * 255.0) as u8,
+                (preset[3] * 255.0) as u8,
+            );
+            ui.painter().rect_filled(rect, 2.0, fill);
+            ui.painter().rect_stroke(rect, 2.0, border, egui::StrokeKind::Inside);
+        }
+        if response.clicked() && !color_eq(preset, current) {
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new(COLOR_CHANGE_KEY), preset));
+        }
+    }
+}
+
+fn draw_stroke_width_buttons(ui: &mut egui::Ui, ctx: &egui::Context, current: f32) {
+    for &preset in &STROKE_WIDTH_PRESETS {
+        let label = format!("{}", preset as i32);
+        let is_selected = (preset - current).abs() < 0.1;
+
+        let (rect, response) = ui.allocate_at_least(
+            egui::vec2(24.0, 22.0),
+            egui::Sense::click(),
+        );
+        if ui.is_rect_visible(rect) {
+            let bg = if is_selected {
+                egui::Color32::from_rgb(0x46, 0x87, 0xDB)
+            } else if response.hovered() {
+                egui::Color32::from_rgb(0xE0, 0xE0, 0xE0)
+            } else {
+                egui::Color32::WHITE
+            };
+            let text_color = if is_selected {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::BLACK
+            };
+            ui.painter().rect_filled(rect, 2.0, bg);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &label,
+                egui::FontId::proportional(11.0),
+                text_color,
+            );
+        }
+        if response.clicked() && !is_selected {
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new(STROKE_WIDTH_CHANGE_KEY), preset));
+        }
+    }
+}
+
+fn draw_fill_toggle(ui: &mut egui::Ui, ctx: &egui::Context, current: bool) {
+    let (rect, response) = ui.allocate_at_least(
+        egui::vec2(40.0, 22.0),
+        egui::Sense::click(),
+    );
+    if ui.is_rect_visible(rect) {
+        let bg = if current {
+            egui::Color32::from_rgb(0x46, 0x87, 0xDB)
+        } else if response.hovered() {
+            egui::Color32::from_rgb(0xE0, 0xE0, 0xE0)
+        } else {
+            egui::Color32::WHITE
+        };
+        let text_color = if current {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::BLACK
+        };
+        ui.painter().rect_filled(rect, 2.0, bg);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Fill",
+            egui::FontId::proportional(11.0),
+            text_color,
+        );
+    }
+    if response.clicked() {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new(FILL_CHANGE_KEY), !current));
+    }
+}
+
+/// Compare two RGBA float colors for equality (with tolerance).
+fn color_eq(a: [f32; 4], b: [f32; 4]) -> bool {
+    (a[0] - b[0]).abs() < 0.01
+        && (a[1] - b[1]).abs() < 0.01
+        && (a[2] - b[2]).abs() < 0.01
+        && (a[3] - b[3]).abs() < 0.01
 }
 
 /// Extract and clear the tool change from egui context data.
@@ -265,6 +408,30 @@ static BLUR_PASSES_CHANGE_KEY: &str = "takeashot_blur_passes_change";
 /// Extract and clear the blur-passes change from egui context data.
 pub fn take_blur_passes_change(ctx: &egui::Context) -> Option<u32> {
     ctx.data_mut(|data| data.remove_temp(egui::Id::new(BLUR_PASSES_CHANGE_KEY)))
+}
+
+/// Key for storing color swatch changes in egui temp data.
+static COLOR_CHANGE_KEY: &str = "takeashot_color_change";
+
+/// Extract and clear the color change from egui context data.
+pub fn take_color_change(ctx: &egui::Context) -> Option<[f32; 4]> {
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new(COLOR_CHANGE_KEY)))
+}
+
+/// Key for storing stroke-width changes in egui temp data.
+static STROKE_WIDTH_CHANGE_KEY: &str = "takeashot_stroke_width_change";
+
+/// Extract and clear the stroke-width change from egui context data.
+pub fn take_stroke_width_change(ctx: &egui::Context) -> Option<f32> {
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new(STROKE_WIDTH_CHANGE_KEY)))
+}
+
+/// Key for storing fill toggle changes in egui temp data.
+static FILL_CHANGE_KEY: &str = "takeashot_fill_change";
+
+/// Extract and clear the fill change from egui context data.
+pub fn take_fill_change(ctx: &egui::Context) -> Option<bool> {
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new(FILL_CHANGE_KEY)))
 }
 
 #[cfg(test)]

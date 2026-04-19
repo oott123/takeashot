@@ -107,6 +107,8 @@ pub fn compose_selection(
             annotations.drawing_shape(),
             annotations.drawing_transform(),
             None,
+            3.0,
+            false,
             &[],
             None,
             output_rect,

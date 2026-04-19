@@ -21,7 +21,7 @@ pub enum Shape {
 /// Default Kawase dual-filter pass count for a freshly drawn mosaic.
 pub const DEFAULT_BLUR_PASSES: u32 = 3;
 
-/// An annotation: a shape with a transform, color, and stroke width.
+/// An annotation: a shape with a transform, color, stroke width, and fill flag.
 #[derive(Debug, Clone)]
 pub struct Annotation {
     pub shape: Shape,
@@ -29,6 +29,8 @@ pub struct Annotation {
     pub transform: Affine2,
     pub color: [f32; 4],
     pub stroke_width: f32,
+    /// Whether to fill the shape (Rect/Ellipse only; ignored for Pen/Line).
+    pub filled: bool,
 }
 
 /// Tolerance for hit-testing edit handles (logical pixels).
@@ -94,6 +96,14 @@ pub struct AnnotationState {
     /// Blur-pass count baked into the next mosaic the user draws. Updated by
     /// the toolbar slider when no mosaic is currently selected.
     default_blur_passes: u32,
+    /// Default properties for new annotations, set by the toolbar.
+    default_color: [f32; 4],
+    default_stroke_width: f32,
+    default_filled: bool,
+    /// Snapshot of properties for the in-progress drawing.
+    drawing_color: [f32; 4],
+    drawing_stroke_width: f32,
+    drawing_filled: bool,
 }
 
 /// Default annotation color: red.
@@ -115,6 +125,12 @@ impl AnnotationState {
             draw_current: None,
             next_id: 0,
             default_blur_passes: DEFAULT_BLUR_PASSES,
+            default_color: DEFAULT_COLOR,
+            default_stroke_width: DEFAULT_STROKE_WIDTH,
+            default_filled: false,
+            drawing_color: DEFAULT_COLOR,
+            drawing_stroke_width: DEFAULT_STROKE_WIDTH,
+            drawing_filled: false,
         }
     }
 
@@ -126,6 +142,87 @@ impl AnnotationState {
     /// Update the blur-pass count baked into future mosaic drawings.
     pub fn set_default_blur_passes(&mut self, passes: u32) {
         self.default_blur_passes = passes;
+    }
+
+    // -- Color --
+
+    pub fn default_color(&self) -> [f32; 4] {
+        self.default_color
+    }
+
+    pub fn set_default_color(&mut self, color: [f32; 4]) {
+        self.default_color = color;
+    }
+
+    pub fn drawing_color(&self) -> [f32; 4] {
+        self.drawing_color
+    }
+
+    pub fn selected_annotation_color(&self) -> Option<[f32; 4]> {
+        let idx = self.selected_id?;
+        self.annotations.get(idx).map(|a| a.color)
+    }
+
+    pub fn set_selected_annotation_color(&mut self, color: [f32; 4]) {
+        if let Some(idx) = self.selected_id {
+            if let Some(ann) = self.annotations.get_mut(idx) {
+                ann.color = color;
+            }
+        }
+    }
+
+    // -- Stroke width --
+
+    pub fn default_stroke_width(&self) -> f32 {
+        self.default_stroke_width
+    }
+
+    pub fn set_default_stroke_width(&mut self, width: f32) {
+        self.default_stroke_width = width;
+    }
+
+    pub fn drawing_stroke_width(&self) -> f32 {
+        self.drawing_stroke_width
+    }
+
+    pub fn selected_annotation_stroke_width(&self) -> Option<f32> {
+        let idx = self.selected_id?;
+        self.annotations.get(idx).map(|a| a.stroke_width)
+    }
+
+    pub fn set_selected_annotation_stroke_width(&mut self, width: f32) {
+        if let Some(idx) = self.selected_id {
+            if let Some(ann) = self.annotations.get_mut(idx) {
+                ann.stroke_width = width;
+            }
+        }
+    }
+
+    // -- Fill --
+
+    pub fn default_filled(&self) -> bool {
+        self.default_filled
+    }
+
+    pub fn set_default_filled(&mut self, filled: bool) {
+        self.default_filled = filled;
+    }
+
+    pub fn drawing_filled(&self) -> bool {
+        self.drawing_filled
+    }
+
+    pub fn selected_annotation_fill(&self) -> Option<bool> {
+        let idx = self.selected_id?;
+        self.annotations.get(idx).map(|a| a.filled)
+    }
+
+    pub fn set_selected_annotation_fill(&mut self, filled: bool) {
+        if let Some(idx) = self.selected_id {
+            if let Some(ann) = self.annotations.get_mut(idx) {
+                ann.filled = filled;
+            }
+        }
     }
 
     /// Blur-pass count of the currently selected mosaic annotation, if any.
@@ -503,6 +600,11 @@ impl AnnotationState {
         self.selected_id = None;
         self.edit_drag = None;
 
+        // Snapshot current defaults for this drawing session.
+        self.drawing_color = self.default_color;
+        self.drawing_stroke_width = self.default_stroke_width;
+        self.drawing_filled = self.default_filled;
+
         match tool {
             crate::ui::toolbar::Tool::Pen => {
                 self.draw_start = Some(p);
@@ -641,8 +743,9 @@ impl AnnotationState {
                 self.annotations.push(Annotation {
                     shape,
                     transform,
-                    color: DEFAULT_COLOR,
-                    stroke_width: DEFAULT_STROKE_WIDTH,
+                    color: self.drawing_color,
+                    stroke_width: self.drawing_stroke_width,
+                    filled: self.drawing_filled,
                 });
             }
         }

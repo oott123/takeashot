@@ -241,36 +241,59 @@ impl OverlayState {
         self.egui.init_renderer(&self.gpu.device, wgpu::TextureFormat::Bgra8UnormSrgb);
         self.egui.set_pixels_per_point(tb_scale.max(1) as f32);
 
-        // Displayed slider value tracks the selected mosaic's own blur_passes,
-        // falling back to the tool default when nothing is selected. That way
-        // the slider edits the thing the user is looking at.
+        // Displayed values track the selected annotation's own properties,
+        // falling back to the tool default when nothing is selected.
+        let selected_color = self.annotations.selected_annotation_color();
+        let selected_stroke_width = self.annotations.selected_annotation_stroke_width();
+        let selected_fill = self.annotations.selected_annotation_fill();
         let selected_mosaic_passes = self.annotations.selected_mosaic_blur_passes();
-        let displayed_passes = selected_mosaic_passes
-            .unwrap_or_else(|| self.annotations.default_blur_passes());
 
-        let (tool_change, blur_pass_change) = self.egui.run_ui(
+        let display = crate::ui::toolbar::ToolbarDisplay {
+            color: selected_color.unwrap_or_else(|| self.annotations.default_color()),
+            stroke_width: selected_stroke_width.unwrap_or_else(|| self.annotations.default_stroke_width()),
+            filled: selected_fill.unwrap_or_else(|| self.annotations.default_filled()),
+            blur_passes: selected_mosaic_passes.unwrap_or_else(|| self.annotations.default_blur_passes()),
+        };
+
+        let changes = self.egui.run_ui(
             &self.gpu.device,
             &self.gpu.queue,
             self.tool,
-            displayed_passes,
+            &display,
             confirmed_rect,
             tb_output_pos,
             tb_output_size,
         );
-        if let Some(new_tool) = tool_change {
+        if let Some(new_tool) = changes.tool {
             if new_tool != self.tool {
                 tracing::info!("tool changed: {:?} → {:?}", self.tool, new_tool);
-                // Every tool switch drops the current annotation selection:
-                // selection semantics are scoped to "annotations of the current
-                // tool's shape", so carrying it across is meaningless.
                 self.annotations.deselect_all();
                 self.tool = new_tool;
             }
         }
-        if let Some(new_passes) = blur_pass_change {
+        if let Some(new_color) = changes.color {
+            if selected_color.is_some() {
+                self.annotations.set_selected_annotation_color(new_color);
+            } else {
+                self.annotations.set_default_color(new_color);
+            }
+        }
+        if let Some(new_sw) = changes.stroke_width {
+            if selected_stroke_width.is_some() {
+                self.annotations.set_selected_annotation_stroke_width(new_sw);
+            } else {
+                self.annotations.set_default_stroke_width(new_sw);
+            }
+        }
+        if let Some(new_fill) = changes.filled {
+            if selected_fill.is_some() {
+                self.annotations.set_selected_annotation_fill(new_fill);
+            } else {
+                self.annotations.set_default_filled(new_fill);
+            }
+        }
+        if let Some(new_passes) = changes.blur_passes {
             if selected_mosaic_passes.is_some() {
-                // Editing a specific mosaic — the tool default is left alone so
-                // deselecting + drawing a new one keeps its prior setting.
                 self.annotations.set_selected_mosaic_blur_passes(new_passes);
             } else {
                 self.annotations.set_default_blur_passes(new_passes);
@@ -359,7 +382,9 @@ impl OverlayState {
                 annotations.annotations(),
                 drawing_shape,
                 drawing_transform,
-                None, // drawing_color
+                None,
+                annotations.drawing_stroke_width(),
+                annotations.drawing_filled(),
                 if selected_idx.is_some() { &edit_handles } else { &[] },
                 selected_idx.and_then(|idx| {
                     annotations.annotations().get(idx)
