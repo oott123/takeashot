@@ -44,6 +44,15 @@ impl Tool {
     }
 }
 
+/// Valid range for the mosaic blur-pass slider.
+pub const BLUR_PASSES_MIN: u32 = 1;
+pub const BLUR_PASSES_MAX: u32 = 8;
+
+/// Toolbar pixel dimensions (width, height).
+/// Height accounts for the two rows (tool buttons + tool-specific options).
+pub const TOOLBAR_WIDTH: f32 = 420.0;
+pub const TOOLBAR_HEIGHT: f32 = 68.0;
+
 /// Compute the toolbar bounding rect in global logical coordinates.
 /// Returns None if there is no selection.
 ///
@@ -56,7 +65,7 @@ pub fn toolbar_rect(
     let sel = selection?;
     let screen = Rect::new(0, 0, output_size.0 as i32, output_size.1 as i32);
     let local_sel = sel.translate(-output_pos.0, -output_pos.1);
-    let (tw, th) = (420.0, 36.0);
+    let (tw, th) = (TOOLBAR_WIDTH, TOOLBAR_HEIGHT);
     let (tx, ty) = place_toolbar(&local_sel, &screen, (tw, th), 4.0);
 
     // Convert back to global coords
@@ -116,14 +125,17 @@ pub fn place_toolbar(
     (x, y)
 }
 
-/// Draw the toolbar using egui. Returns the new tool if the user clicked a different tool.
+/// Draw the toolbar using egui. Tool/option changes are written into `ctx.data_mut`
+/// and must be drained with `take_tool_change` / `take_blur_passes_change`.
 ///
 /// `selection_rect` is in global logical coordinates.
 /// `output_pos` is the output's global position.
 /// `output_size` is the output's logical size.
+/// `blur_passes` is the current mosaic blur-pass count (shown in the Mosaic options row).
 pub fn draw_toolbar(
     ctx: &egui::Context,
     active_tool: Tool,
+    blur_passes: u32,
     selection_rect: Option<Rect>,
     output_pos: (i32, i32),
     output_size: (u32, u32),
@@ -137,10 +149,7 @@ pub fn draw_toolbar(
     let local_sel = selection.translate(-output_pos.0, -output_pos.1);
     let screen = Rect::new(0, 0, output_size.0 as i32, output_size.1 as i32);
 
-    // Estimate toolbar size (we'll measure after first frame)
-    let toolbar_width = 420.0;
-    let toolbar_height = 36.0;
-    let (tx, ty) = place_toolbar(&local_sel, &screen, (toolbar_width, toolbar_height), 4.0);
+    let (tx, ty) = place_toolbar(&local_sel, &screen, (TOOLBAR_WIDTH, TOOLBAR_HEIGHT), 4.0);
 
     // egui coordinates are in logical pixels, same as our local_sel coordinates
     let egui_pos = egui::Pos2::new(tx, ty);
@@ -159,56 +168,111 @@ pub fn draw_toolbar(
             .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(4i8, 2i8))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
 
-                    for &tool in &Tool::ALL {
-                        let is_selected = tool == active_tool;
-                        let label = tool.label();
+                    // Row 1: tool buttons
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
-                        let (rect, response) = ui.allocate_at_least(
-                            egui::vec2(48.0, 28.0),
-                            egui::Sense::click(),
-                        );
+                        for &tool in &Tool::ALL {
+                            let is_selected = tool == active_tool;
+                            let label = tool.label();
 
-                        // Draw button background
-                        if ui.is_rect_visible(rect) {
-                            let bg_color = if is_selected {
-                                egui::Color32::from_rgb(0x46, 0x87, 0xDB) // KDE blue
-                            } else if response.hovered() {
-                                egui::Color32::from_rgb(0xE0, 0xE0, 0xE0)
-                            } else {
-                                egui::Color32::WHITE
-                            };
-                            ui.painter().rect_filled(rect, 2.0, bg_color);
-
-                            let text_color = if is_selected {
-                                egui::Color32::WHITE
-                            } else {
-                                egui::Color32::BLACK
-                            };
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                label,
-                                egui::FontId::proportional(11.0),
-                                text_color,
+                            let (rect, response) = ui.allocate_at_least(
+                                egui::vec2(48.0, 28.0),
+                                egui::Sense::click(),
                             );
-                        }
 
-                        // Handle click
-                        if response.clicked() && !is_selected {
-                            ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOOL_CHANGE_KEY), tool));
+                            // Draw button background
+                            if ui.is_rect_visible(rect) {
+                                let bg_color = if is_selected {
+                                    egui::Color32::from_rgb(0x46, 0x87, 0xDB) // KDE blue
+                                } else if response.hovered() {
+                                    egui::Color32::from_rgb(0xE0, 0xE0, 0xE0)
+                                } else {
+                                    egui::Color32::WHITE
+                                };
+                                ui.painter().rect_filled(rect, 2.0, bg_color);
+
+                                let text_color = if is_selected {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::BLACK
+                                };
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    label,
+                                    egui::FontId::proportional(11.0),
+                                    text_color,
+                                );
+                            }
+
+                            // Handle click
+                            if response.clicked() && !is_selected {
+                                ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOOL_CHANGE_KEY), tool));
+                            }
                         }
-                    }
+                    });
+
+                    // Row 2: tool-specific options
+                    draw_tool_options_row(ui, ctx, active_tool, blur_passes);
                 });
             });
+    });
+}
+
+/// Render the second row of tool-specific options. Always allocates the row's
+/// full height so the toolbar frame stays a constant size regardless of tool.
+fn draw_tool_options_row(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    active_tool: Tool,
+    blur_passes: u32,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+        // Reserve a fixed row height so the toolbar doesn't resize per tool.
+        ui.set_min_height(26.0);
+
+        match active_tool {
+            Tool::Mosaic => {
+                ui.label(
+                    egui::RichText::new("Blur")
+                        .color(egui::Color32::BLACK)
+                        .size(11.0),
+                );
+                let mut val = blur_passes.clamp(BLUR_PASSES_MIN, BLUR_PASSES_MAX);
+                let slider = egui::Slider::new(&mut val, BLUR_PASSES_MIN..=BLUR_PASSES_MAX)
+                    .integer()
+                    .show_value(true);
+                let response = ui.add(slider);
+                if response.changed() && val != blur_passes {
+                    ctx.data_mut(|data| {
+                        data.insert_temp(egui::Id::new(BLUR_PASSES_CHANGE_KEY), val)
+                    });
+                }
+            }
+            _ => {
+                // No options for other tools yet. Placeholder keeps the row the same size.
+                ui.label(" ");
+            }
+        }
     });
 }
 
 /// Extract and clear the tool change from egui context data.
 pub fn take_tool_change(ctx: &egui::Context) -> Option<Tool> {
     ctx.data_mut(|data| data.remove_temp(egui::Id::new(TOOL_CHANGE_KEY)))
+}
+
+/// Key for storing blur-pass slider changes in egui temp data.
+static BLUR_PASSES_CHANGE_KEY: &str = "takeashot_blur_passes_change";
+
+/// Extract and clear the blur-passes change from egui context data.
+pub fn take_blur_passes_change(ctx: &egui::Context) -> Option<u32> {
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new(BLUR_PASSES_CHANGE_KEY)))
 }
 
 #[cfg(test)]

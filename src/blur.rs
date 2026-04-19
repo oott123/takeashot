@@ -2,8 +2,6 @@ use anyhow::Result;
 use std::sync::Arc;
 use wgpu::*;
 
-const BLUR_PASSES: u32 = 3;
-
 pub struct DualBlur {
     device: Arc<Device>,
     queue: Arc<Queue>,
@@ -106,13 +104,15 @@ impl DualBlur {
 
     /// Generate a blurred texture from a source texture view.
     /// `width`/`height` are the source texture dimensions.
+    /// `passes` is the number of Kawase dual-filter down/up passes (≥1).
     /// Returns the bind group for the blurred result (texture view + sampler).
-    pub fn blur(&self, source_view: &TextureView, width: u32, height: u32) -> BindGroup {
+    pub fn blur(&self, source_view: &TextureView, width: u32, height: u32, passes: u32) -> BindGroup {
+        let passes = passes.max(1);
         let start = std::time::Instant::now();
-        tracing::info!("blur start: {width}x{height}, {BLUR_PASSES} passes");
+        tracing::info!("blur start: {width}x{height}, {passes} passes");
 
-        let mut down_textures: Vec<(Texture, TextureView, BindGroup)> = Vec::with_capacity(BLUR_PASSES as usize);
-        let mut up_textures: Vec<(Texture, TextureView)> = Vec::with_capacity(BLUR_PASSES as usize);
+        let mut down_textures: Vec<(Texture, TextureView, BindGroup)> = Vec::with_capacity(passes as usize);
+        let mut up_textures: Vec<(Texture, TextureView)> = Vec::with_capacity(passes as usize);
 
         // Create source bind group from the provided texture view
         let source_bg = self.make_bind_group(source_view);
@@ -122,7 +122,7 @@ impl DualBlur {
         let mut cur_w = width;
         let mut cur_h = height;
 
-        for i in 0..BLUR_PASSES {
+        for i in 0..passes {
             cur_w = (cur_w + 1) / 2;
             cur_h = (cur_h + 1) / 2;
 
@@ -137,7 +137,7 @@ impl DualBlur {
 
         // --- Upsample passes ---
         // Start from the smallest downsampled level and work back up
-        for i in (0..BLUR_PASSES as usize).rev() {
+        for i in (0..passes as usize).rev() {
             let up_w = if i == 0 { width } else { down_textures[i - 1].0.width() };
             let up_h = if i == 0 { height } else { down_textures[i - 1].0.height() };
 

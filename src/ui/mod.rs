@@ -60,7 +60,7 @@ impl EguiState {
     }
 
     /// Run the egui UI for one frame AND upload textures immediately.
-    /// Returns the tool change (if any).
+    /// Returns any tool change and blur-pass slider change detected this frame.
     ///
     /// After calling this, call `paint()` for each output that should render the toolbar.
     pub fn run_ui(
@@ -68,10 +68,11 @@ impl EguiState {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         active_tool: toolbar::Tool,
+        blur_passes: u32,
         selection_rect: Option<crate::geom::Rect>,
         output_pos: (i32, i32),
         output_size: (u32, u32),
-    ) -> Option<toolbar::Tool> {
+    ) -> (Option<toolbar::Tool>, Option<u32>) {
         // egui expects time as a monotonically increasing value in seconds.
         self.raw_input.time = Some(self.start_time.elapsed().as_secs_f64());
         self.raw_input.screen_rect = Some(egui::Rect::from_min_max(
@@ -84,7 +85,7 @@ impl EguiState {
 
         // ctx.run_ui() processes input, runs the UI closure, AND ends the frame.
         let full_output = self.ctx.run_ui(self.raw_input.take(), |ctx| {
-            toolbar::draw_toolbar(ctx, active_tool, selection_rect, output_pos, output_size)
+            toolbar::draw_toolbar(ctx, active_tool, blur_passes, selection_rect, output_pos, output_size)
         });
 
         // Tessellate shapes into paint jobs
@@ -101,7 +102,10 @@ impl EguiState {
             }
         }
 
-        toolbar::take_tool_change(&self.ctx)
+        (
+            toolbar::take_tool_change(&self.ctx),
+            toolbar::take_blur_passes_change(&self.ctx),
+        )
     }
 
     /// Paint the egui UI into a texture view.

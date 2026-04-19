@@ -22,12 +22,16 @@ pub struct OutputInfo {
 
 /// Render the confirmed selection (screenshot + annotations, no dim overlay, no handles)
 /// and composite all outputs into a single RGBA image cropped to the selection rect.
+///
+/// `blur_passes` controls the mosaic blur strength — match the value that was shown
+/// in the overlay so the exported image looks like what the user saw.
 pub fn compose_selection(
     gpu: &Gpu,
     outputs: &[OutputInfo],
     captured: &[CapturedScreen],
     annotations: &AnnotationState,
     selection_rect: Rect,
+    blur_passes: u32,
 ) -> Result<RgbaImage> {
     let device = &gpu.device;
 
@@ -48,7 +52,7 @@ pub fn compose_selection(
             let uploaded = gpu.upload_bgra_texture(cap.width, cap.height, cap.stride, &cap.bgra);
             let blurred = DualBlur::new(gpu.device.clone(), gpu.queue.clone())
                 .context("failed to create DualBlur for compose")?
-                .blur(&uploaded.view, cap.width, cap.height);
+                .blur(&uploaded.view, cap.width, cap.height, blur_passes);
             (uploaded.bind_group, blurred)
         } else {
             tracing::warn!("no captured screen for output {:?}, skipping", o.output_name);
