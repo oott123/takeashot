@@ -28,7 +28,7 @@ pub struct Annotation {
 }
 
 /// Tolerance for hit-testing edit handles (logical pixels).
-const HANDLE_TOLERANCE: f32 = 8.0;
+const HANDLE_TOLERANCE: f32 = 14.0;
 
 /// Edit handle kind for rendering and hit-testing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,8 +50,8 @@ pub struct EditHandlePos {
 #[derive(Debug, Clone, Copy)]
 enum EditDrag {
     Moving { start_pos: Vec2, start_transform: Affine2 },
-    ScalingCorner { corner: usize, start_pos: Vec2, start_transform: Affine2 },
-    Rotating { start_pos: Vec2, start_angle: f32, start_transform: Affine2 },
+    ScalingCorner { corner: usize, start_pos: Vec2, start_transform: Affine2, start_center: Vec2 },
+    Rotating { start_pos: Vec2, start_angle: f32, start_transform: Affine2, start_center: Vec2 },
 }
 
 /// Result of an annotation pointer event.
@@ -338,21 +338,27 @@ impl AnnotationState {
                         if idx < self.annotations.len() {
                             let ann = &self.annotations[idx];
                             let start_transform = ann.transform;
+                            let bounds = Self::annotation_bounds(ann);
+                            let start_center = Vec2::new(
+                                (bounds.x + bounds.w / 2) as f32,
+                                (bounds.y + bounds.h / 2) as f32,
+                            );
                             match handle {
                                 EditHandle::Corner(corner) => {
                                     self.edit_drag = Some(EditDrag::ScalingCorner {
                                         corner,
                                         start_pos: p,
                                         start_transform,
+                                        start_center,
                                     });
                                 }
                                 EditHandle::Rotation => {
-                                    let center = start_transform.translation;
-                                    let start_angle = (p - center).to_angle();
+                                    let start_angle = (p - start_center).to_angle();
                                     self.edit_drag = Some(EditDrag::Rotating {
                                         start_pos: p,
                                         start_angle,
                                         start_transform,
+                                        start_center,
                                     });
                                 }
                             }
@@ -442,9 +448,8 @@ impl AnnotationState {
                             let translation = Affine2::from_translation(delta);
                             self.annotations[idx].transform = translation * *start_transform;
                         }
-                        EditDrag::ScalingCorner { corner: _, start_pos, start_transform } => {
-                            // Scale from the annotation center based on drag distance ratio
-                            let center = start_transform.translation;
+                        EditDrag::ScalingCorner { corner: _, start_pos, start_transform, start_center } => {
+                            let center = *start_center;
                             let start_delta = *start_pos - center;
                             let current_delta = p - center;
                             if start_delta.length() > 1.0 {
@@ -456,8 +461,8 @@ impl AnnotationState {
                                     from_origin * scale_transform * to_origin * *start_transform;
                             }
                         }
-                        EditDrag::Rotating { start_pos: _, start_angle, start_transform } => {
-                            let center = start_transform.translation;
+                        EditDrag::Rotating { start_pos: _, start_angle, start_transform, start_center } => {
+                            let center = *start_center;
                             let current_angle = (p - center).to_angle();
                             let delta_angle = current_angle - *start_angle;
                             let rotation = Affine2::from_angle(delta_angle);

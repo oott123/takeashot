@@ -101,6 +101,7 @@ pub fn compose_selection(
             annotations.drawing_transform(),
             None,
             &[],
+            None,
             output_rect,
             task.scale as i32,
             (phys_w, phys_h),

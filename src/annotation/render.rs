@@ -12,6 +12,7 @@ use lyon_tessellation::{StrokeOptions, StrokeTessellator, BuffersBuilder, Vertex
 /// - `drawing_transform`: transform for the in-progress drawing
 /// - `drawing_color`: color for the in-progress drawing
 /// - `edit_handles`: edit handles to render for the selected annotation
+/// - `selected_bounds`: bounding box of the selected annotation (for dashed border)
 /// - `output_rect`: global logical rect of this output (origin + logical size)
 /// - `scale_factor`: output scale factor (logical → physical)
 /// - `surface_size`: physical pixel size of the wgpu surface
@@ -23,6 +24,7 @@ pub fn tessellate_annotations(
     drawing_transform: Option<Affine2>,
     drawing_color: Option<[f32; 4]>,
     edit_handles: &[EditHandlePos],
+    selected_bounds: Option<Rect>,
     output_rect: Rect,
     scale_factor: i32,
     surface_size: (u32, u32),
@@ -51,20 +53,40 @@ pub fn tessellate_annotations(
         tessellate_one(shape, transform, color, 3.0, ox, oy, sf, sw, sh, &mut vertices);
     }
 
-    // Render edit handles as small squares
+    // Dashed border around selected annotation (alternating white and gray)
+    if let Some(bounds) = selected_bounds {
+        let tl = global_to_ndc(Vec2::new(bounds.x as f32, bounds.y as f32), ox, oy, sf, sw, sh);
+        let br = global_to_ndc(Vec2::new((bounds.x + bounds.w) as f32, (bounds.y + bounds.h) as f32), ox, oy, sf, sw, sh);
+        const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+        const BLACK: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+        dashed_rect(tl[0], tl[1], br[0], br[1], sf, sw, sh, WHITE, BLACK, &mut vertices);
+    }
+
+    // Render edit handles with dark outlines
+    const HANDLE_OUTLINE_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.8];
+    const OUTLINE_LOGICAL: f32 = 1.0; // outline width per side in logical pixels
+    let outline_dx = OUTLINE_LOGICAL * sf / sw * 2.0;
+    let outline_dy = OUTLINE_LOGICAL * sf / sh * 2.0;
+
     for hp in edit_handles {
         let ndc = global_to_ndc(hp.pos, ox, oy, sf, sw, sh);
         let handle_color: [f32; 4] = match hp.kind {
             EditHandle::Corner(_) => [1.0, 1.0, 1.0, 1.0],  // white
             EditHandle::Rotation => [0.27, 0.53, 0.87, 1.0], // KDE blue
         };
-        let hs_ndc = 4.0 / sw * 2.0; // ~4px half-size in NDC
-        let vs_ndc = 4.0 / sh * 2.0;
+        let hs_ndc = 4.0 * sf / sw * 2.0; // 4 logical-pixel half-size in NDC
+        let vs_ndc = 4.0 * sf / sh * 2.0;
         let (cx, cy) = (ndc[0], ndc[1]);
 
         match hp.kind {
             EditHandle::Corner(_) => {
-                // Square handle
+                // Outline (larger square)
+                vertices.extend_from_slice(&quad(
+                    cx - hs_ndc - outline_dx, cy - vs_ndc - outline_dy,
+                    cx + hs_ndc + outline_dx, cy + vs_ndc + outline_dy,
+                    HANDLE_OUTLINE_COLOR,
+                ));
+                // Fill
                 vertices.extend_from_slice(&quad(
                     cx - hs_ndc, cy - vs_ndc,
                     cx + hs_ndc, cy + vs_ndc,
@@ -72,7 +94,16 @@ pub fn tessellate_annotations(
                 ));
             }
             EditHandle::Rotation => {
-                // Diamond handle
+                // Outline diamond
+                let ohs = hs_ndc * 1.2 + outline_dx;
+                let ovs = vs_ndc * 1.2 + outline_dy;
+                vertices.push(ColoredVertex { position: [cx, cy - ovs], color: HANDLE_OUTLINE_COLOR });
+                vertices.push(ColoredVertex { position: [cx + ohs, cy], color: HANDLE_OUTLINE_COLOR });
+                vertices.push(ColoredVertex { position: [cx, cy + ovs], color: HANDLE_OUTLINE_COLOR });
+                vertices.push(ColoredVertex { position: [cx, cy + ovs], color: HANDLE_OUTLINE_COLOR });
+                vertices.push(ColoredVertex { position: [cx - ohs, cy], color: HANDLE_OUTLINE_COLOR });
+                vertices.push(ColoredVertex { position: [cx, cy - ovs], color: HANDLE_OUTLINE_COLOR });
+                // Fill diamond
                 let hs = hs_ndc * 1.2;
                 let vs = vs_ndc * 1.2;
                 vertices.push(ColoredVertex { position: [cx, cy - vs], color: handle_color });
@@ -199,6 +230,91 @@ fn shape_to_path(shape: &Shape) -> Option<Path> {
         }
     }
     Some(builder.build())
+}
+
+/// Draw a dashed rectangle in NDC coordinates.
+/// Alternates between `color_a` and `color_b` for each dash segment.
+fn dashed_rect(
+    l: f32, t: f32, r: f32, b: f32,
+    sf: f32, sw: f32, sh: f32,
+    color_a: [f32; 4],
+    color_b: [f32; 4],
+    vertices: &mut Vec<ColoredVertex>,
+) {
+    const DASH_LEN: f32 = 5.0; // logical pixels
+    const GAP_LEN: f32 = 2.0; // logical pixels
+    const THICKNESS: f32 = 1.0; // logical pixels
+
+    let thickness_x = THICKNESS * sf / sw * 2.0;
+    let thickness_y = THICKNESS * sf / sh * 2.0;
+
+    // Compute total perimeter to determine dash index offset for continuity
+    let w = r - l;
+    let h = b - t;
+    let top_len = w;
+    let right_len = h - thickness_y * 2.0;
+    let bottom_len = w;
+    let _left_len = h - thickness_y * 2.0;
+    let period_ndc_h = (DASH_LEN + GAP_LEN) * sf / sw * 2.0;
+    let period_ndc_v = (DASH_LEN + GAP_LEN) * sf / sh * 2.0;
+
+    // Count how many full periods fit on each preceding edge to offset dash index
+    let top_periods = (top_len / period_ndc_h).floor() as usize;
+    let right_periods = (right_len / period_ndc_v).floor() as usize;
+    let bottom_periods = (bottom_len / period_ndc_h).floor() as usize;
+
+    // Top edge
+    dashed_edge(l, t, r, t, DASH_LEN, GAP_LEN, 0.0, thickness_y, sf, sw, color_a, color_b, 0, vertices);
+    // Right edge
+    dashed_edge(r - thickness_x, t + thickness_y, r - thickness_x, b - thickness_y, DASH_LEN, GAP_LEN, thickness_x, 0.0, sf, sh, color_a, color_b, top_periods, vertices);
+    // Bottom edge (right→left to continue the pattern)
+    dashed_edge(r, b - thickness_y, l, b - thickness_y, DASH_LEN, GAP_LEN, 0.0, thickness_y, sf, sw, color_a, color_b, top_periods + right_periods, vertices);
+    // Left edge (bottom→top)
+    dashed_edge(l, b - thickness_y, l, t + thickness_y, DASH_LEN, GAP_LEN, thickness_x, 0.0, sf, sh, color_a, color_b, top_periods + right_periods + bottom_periods, vertices);
+}
+
+/// Draw dashes along one edge, alternating colors.
+/// `dash_index_offset` is used to maintain color alternation continuity across edges.
+fn dashed_edge(
+    x0: f32, y0: f32, x1: f32, y1: f32,
+    dash_len: f32, gap_len: f32,
+    dx: f32, dy: f32,
+    sf: f32, s_dim: f32,
+    color_a: [f32; 4],
+    color_b: [f32; 4],
+    dash_index_offset: usize,
+    vertices: &mut Vec<ColoredVertex>,
+) {
+    let edge_len_ndc = ((x1 - x0).hypot(y1 - y0)).abs();
+    let period_ndc = (dash_len + gap_len) * sf / s_dim * 2.0;
+    let dash_ndc = dash_len * sf / s_dim * 2.0;
+
+    if edge_len_ndc <= 0.0 {
+        return;
+    }
+    if edge_len_ndc < dash_ndc {
+        let color = if dash_index_offset % 2 == 0 { color_a } else { color_b };
+        vertices.extend_from_slice(&quad(x0, y0, x1 + dx, y1 + dy, color));
+        return;
+    }
+
+    let dir_x = (x1 - x0) / edge_len_ndc;
+    let dir_y = (y1 - y0) / edge_len_ndc;
+    let mut pos = 0.0f32;
+    let mut dash_idx = dash_index_offset;
+
+    while pos < edge_len_ndc {
+        let dash_start = pos;
+        let dash_end = (pos + dash_ndc).min(edge_len_ndc);
+        let sx = x0 + dir_x * dash_start;
+        let sy = y0 + dir_y * dash_start;
+        let ex = x0 + dir_x * dash_end;
+        let ey = y0 + dir_y * dash_end;
+        let color = if dash_idx % 2 == 0 { color_a } else { color_b };
+        vertices.extend_from_slice(&quad(sx, sy, ex + dx, ey + dy, color));
+        pos += period_ndc;
+        dash_idx += 1;
+    }
 }
 
 /// Build 6 vertices (2 triangles) for a filled rectangle.

@@ -318,6 +318,10 @@ impl OverlayState {
                 drawing_transform,
                 None, // drawing_color
                 if selected_idx.is_some() { &edit_handles } else { &[] },
+                selected_idx.and_then(|idx| {
+                    annotations.annotations().get(idx)
+                        .map(|ann| crate::annotation::AnnotationState::annotation_bounds(ann))
+                }),
                 output_rect,
                 scale,
                 (phys_w, phys_h),
