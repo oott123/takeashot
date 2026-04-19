@@ -15,6 +15,7 @@ pub enum Shape {
     Line { start: Vec2, end: Vec2 },
     Rect { half_extents: Vec2 },
     Ellipse { radii: Vec2 },
+    Mosaic { half_extents: Vec2 },
 }
 
 /// An annotation: a shape with a transform, color, and stroke width.
@@ -165,7 +166,7 @@ impl AnnotationState {
     pub fn drawing_transform(&self) -> Option<Affine2> {
         match self.drawing.as_ref()? {
             Shape::Pen { .. } | Shape::Line { .. } => Some(Affine2::IDENTITY),
-            Shape::Rect { .. } | Shape::Ellipse { .. } => {
+            Shape::Rect { .. } | Shape::Ellipse { .. } | Shape::Mosaic { .. } => {
                 // Center is the midpoint of draw_start and draw_current
                 if let (Some(start), Some(current)) = (self.draw_start, self.draw_current) {
                     Some(Affine2::from_translation((start + current) / 2.0))
@@ -222,7 +223,7 @@ impl AnnotationState {
                     (max_y - min_y + ann.stroke_width) as i32,
                 )
             }
-            Shape::Rect { half_extents } => {
+            Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
                 let he = *half_extents;
                 // Local rect: (-he.x, -he.y) to (he.x, he.y)
                 let corners = [
@@ -286,7 +287,7 @@ impl AnnotationState {
                 let max_v = start.max(*end);
                 (min_v - Vec2::splat(hw), max_v + Vec2::splat(hw))
             }
-            Shape::Rect { half_extents } => {
+            Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
                 let he = *half_extents;
                 (Vec2::new(-he.x - hw, -he.y - hw), Vec2::new(he.x + hw, he.y + hw))
             }
@@ -450,6 +451,11 @@ impl AnnotationState {
                 self.drawing = Some(Shape::Ellipse { radii: Vec2::ZERO });
                 AnnotationAction::Consumed
             }
+            crate::ui::toolbar::Tool::Mosaic => {
+                self.draw_start = Some(p);
+                self.drawing = Some(Shape::Mosaic { half_extents: Vec2::ZERO });
+                AnnotationAction::Consumed
+            }
             crate::ui::toolbar::Tool::Move => {
                 // Move tool doesn't interact with annotations
                 AnnotationAction::None
@@ -471,7 +477,7 @@ impl AnnotationState {
                 Shape::Line { end, .. } => {
                     *end = p;
                 }
-                Shape::Rect { half_extents } => {
+                Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
                     if let Some(start) = self.draw_start {
                         let half = (p - start) / 2.0;
                         *half_extents = Vec2::new(half.x.abs(), half.y.abs());
@@ -545,7 +551,7 @@ impl AnnotationState {
             let is_valid = match &shape {
                 Shape::Pen { points } => points.len() >= 2,
                 Shape::Line { start, end } => (*start - *end).length() > 1.0,
-                Shape::Rect { half_extents } => half_extents.x > 1.0 && half_extents.y > 1.0,
+                Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => half_extents.x > 1.0 && half_extents.y > 1.0,
                 Shape::Ellipse { radii } => radii.x > 1.0 && radii.y > 1.0,
             };
 
@@ -553,7 +559,7 @@ impl AnnotationState {
                 let current = saved_draw_current;
                 let transform = match &shape {
                     Shape::Pen { .. } | Shape::Line { .. } => Affine2::IDENTITY,
-                    Shape::Rect { .. } | Shape::Ellipse { .. } => {
+                    Shape::Rect { .. } | Shape::Ellipse { .. } | Shape::Mosaic { .. } => {
                         // Center at the midpoint of draw_start → draw_current
                         if let (Some(s), Some(c)) = (start, current) {
                             Affine2::from_translation((s + c) / 2.0)
@@ -599,7 +605,8 @@ impl AnnotationState {
             crate::ui::toolbar::Tool::Pen
             | crate::ui::toolbar::Tool::Line
             | crate::ui::toolbar::Tool::Rect
-            | crate::ui::toolbar::Tool::Ellipse => {
+            | crate::ui::toolbar::Tool::Ellipse
+            | crate::ui::toolbar::Tool::Mosaic => {
                 // Drawing tools always use crosshair inside selection
                 if let Some(rect) = selection_rect {
                     let gp = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
@@ -866,5 +873,31 @@ mod tests {
         let rot_pos = handles.iter().find(|h| matches!(h.kind, EditHandle::Rotation)).unwrap().pos;
         state.on_pointer_press((rot_pos.x as f64, rot_pos.y as f64), BTN_LEFT, Tool::AnnotationEdit, None);
         assert!(matches!(state.edit_drag, Some(EditDrag::Rotating { .. })));
+    }
+
+    #[test]
+    fn draw_mosaic() {
+        let mut state = AnnotationState::new();
+        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Mosaic, None);
+        state.on_pointer_motion((200.0, 200.0));
+        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+
+        assert_eq!(state.annotations.len(), 1);
+        if let Shape::Mosaic { half_extents } = state.annotations[0].shape {
+            assert!((half_extents.x - 50.0).abs() < 1.0);
+            assert!((half_extents.y - 50.0).abs() < 1.0);
+        } else {
+            panic!("expected Mosaic shape");
+        }
+    }
+
+    #[test]
+    fn too_small_mosaic_is_discarded() {
+        let mut state = AnnotationState::new();
+        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Mosaic, None);
+        state.on_pointer_motion((100.5, 100.5));
+        state.on_pointer_release((100.5, 100.5), BTN_LEFT);
+
+        assert_eq!(state.annotations.len(), 0);
     }
 }

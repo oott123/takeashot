@@ -69,6 +69,39 @@ impl ColoredVertex {
     };
 }
 
+/// Vertex for mosaic quads (position in clip-space + UV).
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct TexturedVertex {
+    pub position: [f32; 2],
+    pub uv: [f32; 2],
+}
+
+impl TexturedVertex {
+    pub const DESC: VertexBufferLayout<'static> = VertexBufferLayout {
+        array_stride: std::mem::size_of::<Self>() as u64,
+        step_mode: VertexStepMode::Vertex,
+        attributes: &[
+            VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: VertexFormat::Float32x2,
+            },
+            VertexAttribute {
+                offset: std::mem::size_of::<[f32; 2]>() as u64,
+                shader_location: 1,
+                format: VertexFormat::Float32x2,
+            },
+        ],
+    };
+}
+
+/// Uploaded texture with both a bind group and the texture view.
+pub struct UploadedTexture {
+    pub bind_group: BindGroup,
+    pub view: TextureView,
+}
+
 /// Shared GPU resources.
 pub struct Gpu {
     pub device: Arc<Device>,
@@ -76,6 +109,7 @@ pub struct Gpu {
     instance: Arc<Instance>,
     screenshot_pipeline: RenderPipeline,
     handles_pipeline: RenderPipeline,
+    mosaic_pipeline: RenderPipeline,
     bind_group_layout: BindGroupLayout,
     selection_bgl: BindGroupLayout,
     sampler: Sampler,
@@ -237,6 +271,46 @@ impl Gpu {
             cache: None,
         });
 
+        let mosaic_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("mosaic pipeline layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let shader_mosaic = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("mosaic shader"),
+            source: ShaderSource::Wgsl(include_str!("shaders/mosaic.wgsl").into()),
+        });
+
+        let mosaic_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("mosaic pipeline"),
+            layout: Some(&mosaic_layout),
+            vertex: VertexState {
+                module: &shader_mosaic,
+                entry_point: Some("vs"),
+                buffers: &[TexturedVertex::DESC],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(FragmentState {
+                module: &shader_mosaic,
+                entry_point: Some("fs"),
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::Bgra8UnormSrgb,
+                    blend: Some(BlendState::REPLACE),
+                    write_mask: ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                ..PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("takeashot sampler"),
             address_mode_u: AddressMode::ClampToEdge,
@@ -253,6 +327,7 @@ impl Gpu {
             instance,
             screenshot_pipeline,
             handles_pipeline,
+            mosaic_pipeline,
             bind_group_layout,
             selection_bgl,
             sampler,
@@ -283,14 +358,14 @@ impl Gpu {
         Ok(surface)
     }
 
-    /// Upload BGRA pixel data as a texture, returns the bind group for rendering.
+    /// Upload BGRA pixel data as a texture, returns the bind group and texture view.
     pub fn upload_bgra_texture(
         &self,
         width: u32,
         height: u32,
         stride: u32,
         bgra: &[u8],
-    ) -> BindGroup {
+    ) -> UploadedTexture {
         let texture = self.device.create_texture(&TextureDescriptor {
             label: Some("screenshot texture"),
             size: Extent3d { width, height, depth_or_array_layers: 1 },
@@ -321,14 +396,16 @@ impl Gpu {
 
         let view = texture.create_view(&TextureViewDescriptor::default());
 
-        self.device.create_bind_group(&BindGroupDescriptor {
+        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
             label: Some("screenshot bind group"),
             layout: &self.bind_group_layout,
             entries: &[
                 BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&view) },
                 BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&self.sampler) },
             ],
-        })
+        });
+
+        UploadedTexture { bind_group, view }
     }
 
     /// Create a bind group for the selection uniform buffer.
@@ -375,6 +452,19 @@ impl Gpu {
         self.device.create_buffer(&BufferDescriptor {
             label: Some("annotation vertex buffer"),
             size: Self::MAX_ANNOTATION_VERTICES * std::mem::size_of::<ColoredVertex>() as u64,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Maximum vertices for mosaic quad geometry.
+    pub const MAX_MOSAIC_VERTICES: u64 = 1024;
+
+    /// Create a pre-allocated vertex buffer for mosaic quad geometry.
+    pub fn create_mosaic_vertex_buffer(&self) -> Buffer {
+        self.device.create_buffer(&BufferDescriptor {
+            label: Some("mosaic vertex buffer"),
+            size: Self::MAX_MOSAIC_VERTICES * std::mem::size_of::<TexturedVertex>() as u64,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -473,6 +563,7 @@ impl Gpu {
         selection_bind_group: &BindGroup,
         selection_vertex_buffer: Option<(&Buffer, u32)>,
         annotation_vertex_buffer: Option<(&Buffer, u32)>,
+        mosaic: Option<(&BindGroup, &Buffer, u32)>,
     ) {
         let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("overlay render"),
@@ -499,7 +590,30 @@ impl Gpu {
             pass.draw(0..3, 0..1);
         }
 
-        // Pass 2: draw annotations
+        // Pass 2: draw mosaic quads (blurred regions over the screenshot)
+        if let Some((blurred_bg, vbuf, count)) = mosaic {
+            if count > 0 {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("mosaic pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.mosaic_pipeline);
+                pass.set_bind_group(0, blurred_bg, &[]);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..count, 0..1);
+            }
+        }
+
+        // Pass 3: draw annotations
         if let Some((vbuf, count)) = annotation_vertex_buffer {
             if count > 0 {
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -521,7 +635,7 @@ impl Gpu {
             }
         }
 
-        // Pass 3: draw selection handles and border
+        // Pass 4: draw selection handles and border
         if let Some((vbuf, count)) = selection_vertex_buffer {
             if count > 0 {
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {

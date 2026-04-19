@@ -1,5 +1,6 @@
 mod annotation;
 mod app;
+mod blur;
 mod capture;
 mod clipboard;
 mod compose;

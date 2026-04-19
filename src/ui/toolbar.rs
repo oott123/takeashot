@@ -10,22 +10,24 @@ pub enum Tool {
     Line,
     Rect,
     Ellipse,
+    Mosaic,
 }
 
 impl Tool {
-    /// Returns true if this tool draws annotations (Pen, Line, Rect, Ellipse).
+    /// Returns true if this tool draws annotations (Pen, Line, Rect, Ellipse, Mosaic).
     pub fn is_drawing(&self) -> bool {
-        matches!(self, Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse)
+        matches!(self, Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic)
     }
 
     /// All tools in toolbar order.
-    pub const ALL: [Tool; 6] = [
+    pub const ALL: [Tool; 7] = [
         Tool::Move,
         Tool::AnnotationEdit,
         Tool::Pen,
         Tool::Line,
         Tool::Rect,
         Tool::Ellipse,
+        Tool::Mosaic,
     ];
 
     /// Display label for the tool.
@@ -37,6 +39,7 @@ impl Tool {
             Tool::Line => "\u{2571} Line",           // ╱
             Tool::Rect => "\u{25AD} Rect",           // ▭
             Tool::Ellipse => "\u{2B2D} Ellipse",     // ⬭
+            Tool::Mosaic => "\u{25A3} Mosaic",       // ▣
         }
     }
 }
@@ -53,7 +56,7 @@ pub fn toolbar_rect(
     let sel = selection?;
     let screen = Rect::new(0, 0, output_size.0 as i32, output_size.1 as i32);
     let local_sel = sel.translate(-output_pos.0, -output_pos.1);
-    let (tw, th) = (360.0, 36.0);
+    let (tw, th) = (420.0, 36.0);
     let (tx, ty) = place_toolbar(&local_sel, &screen, (tw, th), 4.0);
 
     // Convert back to global coords
@@ -135,7 +138,7 @@ pub fn draw_toolbar(
     let screen = Rect::new(0, 0, output_size.0 as i32, output_size.1 as i32);
 
     // Estimate toolbar size (we'll measure after first frame)
-    let toolbar_width = 360.0;
+    let toolbar_width = 420.0;
     let toolbar_height = 36.0;
     let (tx, ty) = place_toolbar(&local_sel, &screen, (toolbar_width, toolbar_height), 4.0);
 

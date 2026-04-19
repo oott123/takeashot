@@ -1,6 +1,6 @@
 use crate::annotation::{Annotation, EditHandle, EditHandlePos, OrientedRect, Shape};
 use crate::geom::Rect;
-use crate::overlay::renderer::ColoredVertex;
+use crate::overlay::renderer::{ColoredVertex, TexturedVertex};
 use glam::{Affine2, Vec2};
 use lyon_path::Path;
 use lyon_tessellation::{StrokeOptions, StrokeTessellator, BuffersBuilder, VertexBuffers};
@@ -139,6 +139,11 @@ fn tessellate_one(
     sh: f32,
     vertices: &mut Vec<ColoredVertex>,
 ) {
+    // Mosaic shapes are rendered as textured quads, not stroked geometry
+    if matches!(shape, Shape::Mosaic { .. }) {
+        return;
+    }
+
     let path = match shape_to_path(shape) {
         Some(p) => p,
         None => return,
@@ -206,7 +211,7 @@ fn shape_to_path(shape: &Shape) -> Option<Path> {
             builder.line_to(lyon_path::math::point(end.x, end.y));
             builder.end(false);
         }
-        Shape::Rect { half_extents } => {
+        Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
             let he = *half_extents;
             builder.begin(lyon_path::math::point(-he.x, -he.y));
             builder.line_to(lyon_path::math::point(he.x, -he.y));
@@ -368,3 +373,94 @@ fn quad(l: f32, t: f32, r: f32, b: f32, color: [f32; 4]) -> [ColoredVertex; 6] {
         ColoredVertex { position: [r, b], color },
     ]
 }
+
+/// Tessellate mosaic annotations into textured quads for the mosaic pipeline.
+///
+/// For each `Shape::Mosaic` annotation, generates a screen-aligned quad with
+/// UV coordinates mapping into the blurred screenshot texture.
+/// Non-mosaic shapes are skipped.
+///
+/// Returns vertices as `TexturedVertex` (position in NDC + UV in [0,1]).
+pub fn tessellate_mosaic_quads(
+    annotations: &[Annotation],
+    drawing_shape: Option<&Shape>,
+    drawing_transform: Option<Affine2>,
+    output_rect: Rect,
+    scale_factor: i32,
+    surface_size: (u32, u32),
+) -> Vec<TexturedVertex> {
+    let sw = surface_size.0 as f32;
+    let sh = surface_size.1 as f32;
+    if sw <= 0.0 || sh <= 0.0 {
+        return Vec::new();
+    }
+
+    let ox = output_rect.x as f32;
+    let oy = output_rect.y as f32;
+    let sf = scale_factor as f32;
+
+    let mut vertices = Vec::new();
+
+    // Finalized mosaic annotations
+    for ann in annotations {
+        if let Shape::Mosaic { .. } = &ann.shape {
+            push_mosaic_quad(ann, ox, oy, sf, sw, sh, &mut vertices);
+        }
+    }
+
+    // In-progress mosaic drawing
+    if let Some(Shape::Mosaic { .. }) = drawing_shape {
+        let transform = drawing_transform.unwrap_or(Affine2::IDENTITY);
+        let fake_ann = Annotation {
+            shape: drawing_shape.unwrap().clone(),
+            transform,
+            color: [0.0; 4],
+            stroke_width: 0.0,
+        };
+        push_mosaic_quad(&fake_ann, ox, oy, sf, sw, sh, &mut vertices);
+    }
+
+    vertices
+}
+
+fn push_mosaic_quad(
+    ann: &Annotation,
+    ox: f32, oy: f32, sf: f32,
+    sw: f32, sh: f32,
+    vertices: &mut Vec<TexturedVertex>,
+) {
+    let bounds = AnnotationState::annotation_bounds(ann);
+    if bounds.is_empty() {
+        return;
+    }
+
+    // Convert global logical bounds to per-output physical pixel coords → NDC + UV
+    let l = (bounds.x as f32 - ox) * sf;
+    let t = (bounds.y as f32 - oy) * sf;
+    let r = (bounds.x as f32 + bounds.w as f32 - ox) * sf;
+    let b = (bounds.y as f32 + bounds.h as f32 - oy) * sf;
+
+    // NDC
+    let nl = l / sw * 2.0 - 1.0;
+    let nt = 1.0 - t / sh * 2.0;
+    let nr = r / sw * 2.0 - 1.0;
+    let nb = 1.0 - b / sh * 2.0;
+
+    // UV (in physical pixel space, normalized to surface size)
+    let ul = l / sw;
+    let vt = t / sh;
+    let ur = r / sw;
+    let vb = b / sh;
+
+    // 2 triangles: TL-TR-BL, TR-BR-BL
+    vertices.extend_from_slice(&[
+        TexturedVertex { position: [nl, nt], uv: [ul, vt] },
+        TexturedVertex { position: [nr, nt], uv: [ur, vt] },
+        TexturedVertex { position: [nl, nb], uv: [ul, vb] },
+        TexturedVertex { position: [nl, nb], uv: [ul, vb] },
+        TexturedVertex { position: [nr, nt], uv: [ur, vt] },
+        TexturedVertex { position: [nr, nb], uv: [ur, vb] },
+    ]);
+}
+
+use crate::annotation::AnnotationState;

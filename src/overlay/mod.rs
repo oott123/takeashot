@@ -43,6 +43,8 @@ struct OutputOverlay {
     configured: bool,
     wgpu_surface: Option<wgpu::Surface<'static>>,
     bg_bind_group: Option<wgpu::BindGroup>,
+    /// Blurred texture bind group for mosaic rendering.
+    blurred_bind_group: Option<wgpu::BindGroup>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
     selection_buffer: Option<wgpu::Buffer>,
     selection_bind_group: Option<wgpu::BindGroup>,
@@ -50,6 +52,8 @@ struct OutputOverlay {
     selection_vbuf: Option<wgpu::Buffer>,
     /// Pre-allocated vertex buffer for annotation geometry.
     annotation_vbuf: Option<wgpu::Buffer>,
+    /// Pre-allocated vertex buffer for mosaic quad geometry.
+    mosaic_vbuf: Option<wgpu::Buffer>,
 }
 
 /// Which subsystem owns the current pointer drag.
@@ -78,6 +82,7 @@ struct OverlayState {
     exit_requested: bool,
     display_ptr: *mut std::ffi::c_void,
     selection: SelectionState,
+    blur: crate::blur::DualBlur,
     /// Current cursor shape (to avoid redundant set_cursor calls).
     current_cursor: Option<CursorShape>,
     /// Whether the display needs re-rendering (selection changed, etc.)
@@ -151,9 +156,9 @@ impl OverlayState {
         self.overlays.push(OutputOverlay {
             layer, output_name, output_pos, width: 0, height: 0, scale_factor: scale,
             configured: false,
-            wgpu_surface: None, bg_bind_group: None, surface_config: None,
+            wgpu_surface: None, bg_bind_group: None, blurred_bind_group: None, surface_config: None,
             selection_buffer: None, selection_bind_group: None,
-            selection_vbuf: None, annotation_vbuf: None,
+            selection_vbuf: None, annotation_vbuf: None, mosaic_vbuf: None,
         });
         tracing::info!("layer surface created and committed (scale={scale})");
     }
@@ -273,6 +278,9 @@ impl OverlayState {
             if overlay.annotation_vbuf.is_none() {
                 overlay.annotation_vbuf = Some(self.gpu.create_annotation_vertex_buffer());
             }
+            if overlay.mosaic_vbuf.is_none() {
+                overlay.mosaic_vbuf = Some(self.gpu.create_mosaic_vertex_buffer());
+            }
 
             // Update selection uniform
             let uniform = match global_rect {
@@ -340,9 +348,32 @@ impl OverlayState {
                 );
             }
 
+            // Tessellate mosaic quads for this output
+            let mos_verts = crate::annotation::render::tessellate_mosaic_quads(
+                annotations.annotations(),
+                drawing_shape,
+                drawing_transform,
+                output_rect,
+                scale,
+                (phys_w, phys_h),
+            );
+            let mos_vert_count = mos_verts.len() as u32;
+            let max_mos_verts = renderer::Gpu::MAX_MOSAIC_VERTICES as u32;
+            if mos_vert_count > max_mos_verts {
+                tracing::warn!("mosaic vertex count ({mos_vert_count}) exceeds buffer capacity ({max_mos_verts}), truncating");
+            }
+            let mos_vert_count = mos_vert_count.min(max_mos_verts);
+            if !mos_verts.is_empty() {
+                let bytes_to_write = mos_vert_count as usize * std::mem::size_of::<renderer::TexturedVertex>();
+                self.gpu.queue.write_buffer(
+                    overlay.mosaic_vbuf.as_ref().unwrap(), 0,
+                    &bytemuck::cast_slice(&mos_verts)[..bytes_to_write],
+                );
+            }
+
             // Render
-            if let (Some(surface), Some(config), Some(bg), Some(sel_bg)) =
-                (&overlay.wgpu_surface, &overlay.surface_config, &overlay.bg_bind_group, &overlay.selection_bind_group)
+            if let (Some(surface), Some(config), Some(bg), Some(sel_bg), Some(blurred_bg)) =
+                (&overlay.wgpu_surface, &overlay.surface_config, &overlay.bg_bind_group, &overlay.selection_bind_group, &overlay.blurred_bind_group)
             {
                 let sel_verts = if vert_count > 0 {
                     Some((overlay.selection_vbuf.as_ref().unwrap(), vert_count))
@@ -351,6 +382,11 @@ impl OverlayState {
                 };
                 let ann_verts_opt = if ann_vert_count > 0 {
                     Some((overlay.annotation_vbuf.as_ref().unwrap(), ann_vert_count))
+                } else {
+                    None
+                };
+                let mosaic_opt = if mos_vert_count > 0 {
+                    Some((blurred_bg, overlay.mosaic_vbuf.as_ref().unwrap(), mos_vert_count))
                 } else {
                     None
                 };
@@ -363,8 +399,8 @@ impl OverlayState {
                 };
                 let view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-                // Render main passes (screenshot + annotations + handles)
-                self.gpu.render_into(&view, bg, sel_bg, sel_verts, ann_verts_opt);
+                // Render main passes (screenshot + mosaic + annotations + handles)
+                self.gpu.render_into(&view, bg, sel_bg, sel_verts, ann_verts_opt, mosaic_opt);
 
                 // Render egui toolbar on this output only if it's the toolbar output
                 if toolbar_output_idx == Some(idx) {
@@ -387,7 +423,7 @@ impl OverlayState {
                 self.annotations.cursor_for_position(pos, Tool::AnnotationEdit, sel_rect)
                     .unwrap_or_else(|| self.selection.cursor_for_position(pos))
             }
-            Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+            Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
                 // Inside confirmed selection: crosshair; outside: let selection decide
                 let inside = self.selection.selection.rect().map_or(false, |r| {
                     let p = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
@@ -500,7 +536,7 @@ impl OverlayState {
                     }
                 }
             }
-            Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+            Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
                 // Check if pointer is inside confirmed selection
                 let inside = self.selection.selection.rect().map_or(false, |r| {
                     let p = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
@@ -538,7 +574,7 @@ impl OverlayState {
         // Also forward to annotations if drawing or editing
         match self.tool {
             Tool::Move => {}
-            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
                 self.annotations.on_pointer_motion(pos);
             }
         }
@@ -552,7 +588,7 @@ impl OverlayState {
         // Also forward to annotations if drawing or editing
         match self.tool {
             Tool::Move => {}
-            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse => {
+            Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
                 self.annotations.on_pointer_release(pos, button);
             }
         }
@@ -640,7 +676,7 @@ impl LayerShellHandler for OverlayState {
             wgpu_surf.configure(&self.gpu.device, &config);
 
             let cap = self.find_captured(&output_name);
-            let bg_bind_group = match cap {
+            let uploaded = match cap {
                 Some(cap) => {
                     tracing::info!("uploading texture for output '{output_name:?}' ({}x{})",
                         cap.width, cap.height);
@@ -652,19 +688,25 @@ impl LayerShellHandler for OverlayState {
                 }
             };
 
+            // Generate blurred texture for mosaic
+            let blurred_bind_group = self.blur.blur(&uploaded.view, cap.unwrap().width, cap.unwrap().height);
+
             let sel_buf = self.gpu.create_selection_buffer();
             let sel_bg = self.gpu.create_selection_bind_group(&sel_buf);
             self.gpu.queue.write_buffer(&sel_buf, 0, bytemuck::bytes_of(&SelectionUniform::none()));
             let sel_vbuf = self.gpu.create_selection_vertex_buffer();
             let ann_vbuf = self.gpu.create_annotation_vertex_buffer();
+            let mos_vbuf = self.gpu.create_mosaic_vertex_buffer();
 
             self.overlays[idx].wgpu_surface = Some(wgpu_surf);
-            self.overlays[idx].bg_bind_group = Some(bg_bind_group);
+            self.overlays[idx].bg_bind_group = Some(uploaded.bind_group);
+            self.overlays[idx].blurred_bind_group = Some(blurred_bind_group);
             self.overlays[idx].surface_config = Some(config);
             self.overlays[idx].selection_buffer = Some(sel_buf);
             self.overlays[idx].selection_bind_group = Some(sel_bg);
             self.overlays[idx].selection_vbuf = Some(sel_vbuf);
             self.overlays[idx].annotation_vbuf = Some(ann_vbuf);
+            self.overlays[idx].mosaic_vbuf = Some(mos_vbuf);
         } else if self.overlays[idx].wgpu_surface.is_some() && self.overlays[idx].surface_config.is_some() {
             self.overlays[idx].surface_config.as_mut().unwrap().width = phys_w;
             self.overlays[idx].surface_config.as_mut().unwrap().height = phys_h;
@@ -876,6 +918,7 @@ fn run_inner(
     let output_state = OutputState::new(&globals, &qh);
     let seat_state = SeatState::new(&globals, &qh);
     let gpu = pollster::block_on(Gpu::new())?;
+    let blur = crate::blur::DualBlur::new(gpu.device.clone(), gpu.queue.clone())?;
 
     let mut state = OverlayState {
         registry_state: RegistryState::new(&globals),
@@ -883,6 +926,7 @@ fn run_inner(
         keyboard: None, themed_pointer: None, overlays: Vec::new(), gpu, captured: Vec::new(),
         exit_requested: false, display_ptr,
         selection: SelectionState::new(),
+        blur,
         current_cursor: None,
         dirty: false,
         annotations: AnnotationState::new(),

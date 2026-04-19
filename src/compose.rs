@@ -3,10 +3,11 @@ use image::RgbaImage;
 use wgpu::*;
 
 use crate::annotation::AnnotationState;
-use crate::annotation::render::tessellate_annotations;
+use crate::annotation::render::{tessellate_annotations, tessellate_mosaic_quads};
+use crate::blur::DualBlur;
 use crate::capture::CapturedScreen;
 use crate::geom::Rect;
-use crate::overlay::renderer::{ColoredVertex, Gpu, SelectionUniform};
+use crate::overlay::renderer::{ColoredVertex, Gpu, SelectionUniform, TexturedVertex};
 
 /// Per-output info needed for composition. Extracted from overlay state to avoid
 /// borrowing the entire OverlayState during GPU work.
@@ -43,8 +44,12 @@ pub fn compose_selection(
         let phys_h = o.height * scale;
 
         let cap = find_captured(captured, &o.output_name);
-        let bg_bind_group = if let Some(cap) = cap {
-            gpu.upload_bgra_texture(cap.width, cap.height, cap.stride, &cap.bgra)
+        let (bg_bind_group, blurred_bind_group) = if let Some(cap) = cap {
+            let uploaded = gpu.upload_bgra_texture(cap.width, cap.height, cap.stride, &cap.bgra);
+            let blurred = DualBlur::new(gpu.device.clone(), gpu.queue.clone())
+                .context("failed to create DualBlur for compose")?
+                .blur(&uploaded.view, cap.width, cap.height);
+            (uploaded.bind_group, blurred)
         } else {
             tracing::warn!("no captured screen for output {:?}, skipping", o.output_name);
             continue;
@@ -56,6 +61,7 @@ pub fn compose_selection(
             scale,
             phys_size: (phys_w, phys_h),
             bg_bind_group,
+            blurred_bind_group,
             overlap,
         });
     }
@@ -122,9 +128,36 @@ pub fn compose_selection(
             None
         };
 
-        // Render: screenshot pass (full brightness) + annotation pass (no selection handles)
+        // Tessellate mosaic quads for this output
+        let mos_verts = tessellate_mosaic_quads(
+            annotations.annotations(),
+            annotations.drawing_shape(),
+            annotations.drawing_transform(),
+            output_rect,
+            task.scale as i32,
+            (phys_w, phys_h),
+        );
+        let mos_vert_count = mos_verts.len().min(Gpu::MAX_MOSAIC_VERTICES as usize) as u32;
+
+        let mos_vbuf = if mos_vert_count > 0 {
+            let buf = device.create_buffer(&BufferDescriptor {
+                label: Some("compose mosaic vbuf"),
+                size: Gpu::MAX_MOSAIC_VERTICES * std::mem::size_of::<TexturedVertex>() as u64,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bytes = mos_vert_count as usize * std::mem::size_of::<TexturedVertex>();
+            gpu.queue.write_buffer(&buf, 0, &bytemuck::cast_slice(&mos_verts)[..bytes]);
+            Some(buf)
+        } else {
+            None
+        };
+
+        // Render: screenshot + mosaic + annotations (no selection handles)
         let ann_arg = ann_vbuf.as_ref().map(|buf| (buf, ann_vert_count));
-        gpu.render_into(&view, &task.bg_bind_group, &sel_bind_group, None, ann_arg);
+        let mos_arg: Option<(&BindGroup, &Buffer, u32)> = mos_vbuf.as_ref()
+            .map(|buf| (&task.blurred_bind_group, buf, mos_vert_count));
+        gpu.render_into(&view, &task.bg_bind_group, &sel_bind_group, None, ann_arg, mos_arg);
 
         // Readback via staging buffer
         let row_bytes = phys_w * 4;
@@ -234,6 +267,7 @@ struct OutputTask {
     scale: u32,
     phys_size: (u32, u32),
     bg_bind_group: BindGroup,
+    blurred_bind_group: BindGroup,
     overlap: Rect,
 }
 
