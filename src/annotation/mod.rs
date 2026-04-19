@@ -97,7 +97,6 @@ const DEFAULT_STROKE_WIDTH: f32 = 3.0;
 
 /// Mouse button constants (from linux/input-event-codes.h).
 const BTN_LEFT: u32 = 0x110;
-const BTN_RIGHT: u32 = 0x111;
 
 impl AnnotationState {
     pub fn new() -> Self {
@@ -369,15 +368,6 @@ impl AnnotationState {
         _selection_rect: Option<Rect>,
     ) -> AnnotationAction {
         let p = Vec2::new(pos.0 as f32, pos.1 as f32);
-
-        // Right click: deselect if annotation selected, otherwise nothing
-        if button == BTN_RIGHT {
-            if self.selected_id.is_some() {
-                self.deselect_all();
-                return AnnotationAction::Consumed;
-            }
-            return AnnotationAction::None;
-        }
 
         if button != BTN_LEFT {
             return AnnotationAction::None;
@@ -725,18 +715,6 @@ mod tests {
         state.selected_id = Some(0);
         state.on_delete();
         assert_eq!(state.annotations.len(), 1);
-        assert!(state.selected_id.is_none());
-    }
-
-    #[test]
-    fn right_click_deselects() {
-        let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
-
-        state.selected_id = Some(0);
-        state.on_pointer_press((150.0, 150.0), BTN_RIGHT, Tool::AnnotationEdit, None);
         assert!(state.selected_id.is_none());
     }
 

@@ -53,6 +53,7 @@ The app is a single long-running process triggered by the Pause key or a second 
 - **`geom.rs`** — `Rect`/`Point` helpers. Multi-monitor rendering relies on each `OutputOverlay` knowing its `output_pos` to convert global selection rects to per-output local coords.
 - **`annotation/`** — `Shape` enum (Pen/Line/Rect/Ellipse) with `Affine2` transform. `render.rs` uses lyon tessellation into `ColoredVertex` wgpu buffers. Edit handles rendered via the same wgpu pipeline as selection handles, not egui.
 - **`ui/toolbar.rs`** — egui-wgpu toolbar. `place_toolbar` is a pure function for positioning. Pointer ownership is locked on Press (toolbar vs overlay) until Release. Toolbar hit-testing uses self-computed geometry, not egui's `is_pointer_over_egui()`.
+- **`compose.rs` + `clipboard.rs`** — on `ConfirmAction::Confirmed`, `compose::compose_selection` does a per-output GPU render + readback and crops to the global selection rect; `clipboard::copy_to_clipboard` PNG-encodes the result and hands it to `wl-clipboard-rs`. Called from the overlay's confirm path before exit.
 
 ### Coordinate systems — watch out
 
@@ -64,4 +65,4 @@ Three coordinate spaces coexist and must not be mixed:
 
 ## Implementation status vs plan
 
-`plan.md` describes an 8-milestone rewrite. M1–M6 are complete: single-instance, hotkey, capture, overlay with selection state machine + wgpu rendering, toolbar + annotations, and window snapping. Remaining: M7 (compose + clipboard), M8 (tray + packaging). When adding these, follow the layout in `plan.md` rather than inventing a new structure.
+`plan.md` describes an 8-milestone rewrite. M1–M7 are complete: single-instance, hotkey, capture, overlay with selection state machine + wgpu rendering, toolbar + annotations, window snapping, and compose + clipboard. Remaining: M8 (tray + packaging). When adding these, follow the layout in `plan.md` rather than inventing a new structure.

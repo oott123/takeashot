@@ -516,6 +516,23 @@ impl OverlayState {
             return;
         }
 
+        // Right-click in confirmed mode: cycle tools (drawing → Edit → Move → cancel)
+        if button == 0x111 {
+            match self.tool {
+                Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
+                    self.annotations.deselect_all();
+                    self.tool = Tool::AnnotationEdit;
+                    return;
+                }
+                Tool::AnnotationEdit => {
+                    self.annotations.deselect_all();
+                    self.tool = Tool::Move;
+                    return;
+                }
+                Tool::Move => {} // fall through to cancel/exit
+            }
+        }
+
         // Double-click detection: left click inside confirmed selection with Move tool
         if button == 0x110 && self.tool == Tool::Move && self.selection.selection.is_confirmed() {
             let inside = self.selection.selection.rect().map_or(false, |r| {
