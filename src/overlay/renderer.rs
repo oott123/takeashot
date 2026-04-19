@@ -556,6 +556,7 @@ impl Gpu {
 
     /// Render passes into an existing texture view (does NOT acquire or present the surface).
     /// Caller is responsible for acquiring the surface texture and presenting it.
+    /// `mosaic` draws are issued in slice order; arrange them in z-order.
     pub fn render_into(
         &self,
         view: &TextureView,
@@ -563,7 +564,7 @@ impl Gpu {
         selection_bind_group: &BindGroup,
         selection_vertex_buffer: Option<(&Buffer, u32)>,
         annotation_vertex_buffer: Option<(&Buffer, u32)>,
-        mosaic: Option<(&BindGroup, &Buffer, u32)>,
+        mosaic: Option<(&Buffer, &[(&BindGroup, std::ops::Range<u32>)])>,
     ) {
         let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("overlay render"),
@@ -590,9 +591,9 @@ impl Gpu {
             pass.draw(0..3, 0..1);
         }
 
-        // Pass 2: draw mosaic quads (blurred regions over the screenshot)
-        if let Some((blurred_bg, vbuf, count)) = mosaic {
-            if count > 0 {
+        // Pass 2: draw mosaic quads (blurred regions over the screenshot).
+        if let Some((vbuf, draws)) = mosaic {
+            if !draws.is_empty() {
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("mosaic pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
@@ -607,9 +608,11 @@ impl Gpu {
                     multiview_mask: None,
                 });
                 pass.set_pipeline(&self.mosaic_pipeline);
-                pass.set_bind_group(0, blurred_bg, &[]);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
-                pass.draw(0..count, 0..1);
+                for (blurred_bg, range) in draws {
+                    pass.set_bind_group(0, *blurred_bg, &[]);
+                    pass.draw(range.clone(), 0..1);
+                }
             }
         }
 

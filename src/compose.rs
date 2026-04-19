@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use image::RgbaImage;
+use std::collections::BTreeMap;
 use wgpu::*;
 
 use crate::annotation::AnnotationState;
@@ -22,18 +23,16 @@ pub struct OutputInfo {
 
 /// Render the confirmed selection (screenshot + annotations, no dim overlay, no handles)
 /// and composite all outputs into a single RGBA image cropped to the selection rect.
-///
-/// `blur_passes` controls the mosaic blur strength — match the value that was shown
-/// in the overlay so the exported image looks like what the user saw.
 pub fn compose_selection(
     gpu: &Gpu,
     outputs: &[OutputInfo],
     captured: &[CapturedScreen],
     annotations: &AnnotationState,
     selection_rect: Rect,
-    blur_passes: u32,
 ) -> Result<RgbaImage> {
     let device = &gpu.device;
+    let blur_factory = DualBlur::new(gpu.device.clone(), gpu.queue.clone())
+        .context("failed to create DualBlur for compose")?;
 
     // Build per-output render tasks: only outputs that intersect the selection.
     let mut tasks: Vec<OutputTask> = Vec::new();
@@ -48,12 +47,9 @@ pub fn compose_selection(
         let phys_h = o.height * scale;
 
         let cap = find_captured(captured, &o.output_name);
-        let (bg_bind_group, blurred_bind_group) = if let Some(cap) = cap {
+        let (bg_bind_group, bg_view, cap_size) = if let Some(cap) = cap {
             let uploaded = gpu.upload_bgra_texture(cap.width, cap.height, cap.stride, &cap.bgra);
-            let blurred = DualBlur::new(gpu.device.clone(), gpu.queue.clone())
-                .context("failed to create DualBlur for compose")?
-                .blur(&uploaded.view, cap.width, cap.height, blur_passes);
-            (uploaded.bind_group, blurred)
+            (uploaded.bind_group, uploaded.view, (cap.width, cap.height))
         } else {
             tracing::warn!("no captured screen for output {:?}, skipping", o.output_name);
             continue;
@@ -65,7 +61,8 @@ pub fn compose_selection(
             scale,
             phys_size: (phys_w, phys_h),
             bg_bind_group,
-            blurred_bind_group,
+            bg_view,
+            cap_size,
             overlap,
         });
     }
@@ -132,8 +129,9 @@ pub fn compose_selection(
             None
         };
 
-        // Tessellate mosaic quads for this output
-        let mos_verts = tessellate_mosaic_quads(
+        // Tessellate mosaic quads for this output — each carries its own
+        // blur_passes, so different mosaics can show different blur strengths.
+        let mos_quads = tessellate_mosaic_quads(
             annotations.annotations(),
             annotations.drawing_shape(),
             annotations.drawing_transform(),
@@ -141,26 +139,58 @@ pub fn compose_selection(
             task.scale as i32,
             (phys_w, phys_h),
         );
-        let mos_vert_count = mos_verts.len().min(Gpu::MAX_MOSAIC_VERTICES as usize) as u32;
+        let max_mos_quads = (Gpu::MAX_MOSAIC_VERTICES / 6) as usize;
+        let mos_quads_kept = mos_quads.len().min(max_mos_quads);
 
-        let mos_vbuf = if mos_vert_count > 0 {
+        let mos_vbuf = if mos_quads_kept > 0 {
             let buf = device.create_buffer(&BufferDescriptor {
                 label: Some("compose mosaic vbuf"),
                 size: Gpu::MAX_MOSAIC_VERTICES * std::mem::size_of::<TexturedVertex>() as u64,
                 usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let bytes = mos_vert_count as usize * std::mem::size_of::<TexturedVertex>();
-            gpu.queue.write_buffer(&buf, 0, &bytemuck::cast_slice(&mos_verts)[..bytes]);
+            let mut flat: Vec<TexturedVertex> = Vec::with_capacity(mos_quads_kept * 6);
+            for q in &mos_quads[..mos_quads_kept] {
+                flat.extend_from_slice(&q.vertices);
+            }
+            gpu.queue.write_buffer(&buf, 0, bytemuck::cast_slice(&flat));
             Some(buf)
         } else {
             None
         };
 
+        // Build the blur bind-group cache for this output: one entry per
+        // distinct pass count requested by this output's mosaic quads.
+        let mut blurred_bg_cache: BTreeMap<u32, BindGroup> = BTreeMap::new();
+        if mos_quads_kept > 0 {
+            for q in &mos_quads[..mos_quads_kept] {
+                if !blurred_bg_cache.contains_key(&q.blur_passes) {
+                    let bg = blur_factory.blur(
+                        &task.bg_view,
+                        task.cap_size.0,
+                        task.cap_size.1,
+                        q.blur_passes,
+                    );
+                    blurred_bg_cache.insert(q.blur_passes, bg);
+                }
+            }
+        }
+
+        let mosaic_bg_draws: Vec<(&BindGroup, std::ops::Range<u32>)> =
+            crate::annotation::render::coalesce_mosaic_draws(&mos_quads[..mos_quads_kept])
+                .into_iter()
+                .filter_map(|(passes, range)| {
+                    blurred_bg_cache.get(&passes).map(|bg| (bg, range))
+                })
+                .collect();
+
         // Render: screenshot + mosaic + annotations (no selection handles)
         let ann_arg = ann_vbuf.as_ref().map(|buf| (buf, ann_vert_count));
-        let mos_arg: Option<(&BindGroup, &Buffer, u32)> = mos_vbuf.as_ref()
-            .map(|buf| (&task.blurred_bind_group, buf, mos_vert_count));
+        let mos_arg = if !mosaic_bg_draws.is_empty() {
+            mos_vbuf.as_ref().map(|buf| (buf, mosaic_bg_draws.as_slice()))
+        } else {
+            None
+        };
         gpu.render_into(&view, &task.bg_bind_group, &sel_bind_group, None, ann_arg, mos_arg);
 
         // Readback via staging buffer
@@ -271,7 +301,8 @@ struct OutputTask {
     scale: u32,
     phys_size: (u32, u32),
     bg_bind_group: BindGroup,
-    blurred_bind_group: BindGroup,
+    bg_view: TextureView,
+    cap_size: (u32, u32),
     overlap: Rect,
 }
 

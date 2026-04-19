@@ -211,7 +211,7 @@ fn shape_to_path(shape: &Shape) -> Option<Path> {
             builder.line_to(lyon_path::math::point(end.x, end.y));
             builder.end(false);
         }
-        Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
+        Shape::Rect { half_extents } | Shape::Mosaic { half_extents, .. } => {
             let he = *half_extents;
             builder.begin(lyon_path::math::point(-he.x, -he.y));
             builder.line_to(lyon_path::math::point(he.x, -he.y));
@@ -374,13 +374,38 @@ fn quad(l: f32, t: f32, r: f32, b: f32, color: [f32; 4]) -> [ColoredVertex; 6] {
     ]
 }
 
+pub struct MosaicQuad {
+    pub blur_passes: u32,
+    pub vertices: [TexturedVertex; 6],
+}
+
+/// Walk z-ordered quads and emit one draw range per maximal run of quads
+/// that share a `blur_passes` value, so the mosaic pass issues as few draw
+/// calls as possible while preserving user-visible ordering.
+pub fn coalesce_mosaic_draws(quads: &[MosaicQuad]) -> Vec<(u32, std::ops::Range<u32>)> {
+    let mut draws: Vec<(u32, std::ops::Range<u32>)> = Vec::with_capacity(quads.len());
+    for (i, q) in quads.iter().enumerate() {
+        let start = (i * 6) as u32;
+        let end = start + 6;
+        if let Some(last) = draws.last_mut() {
+            if last.0 == q.blur_passes && last.1.end == start {
+                last.1.end = end;
+                continue;
+            }
+        }
+        draws.push((q.blur_passes, start..end));
+    }
+    draws
+}
+
 /// Tessellate mosaic annotations into textured quads for the mosaic pipeline.
 ///
 /// For each `Shape::Mosaic` annotation, generates a screen-aligned quad with
-/// UV coordinates mapping into the blurred screenshot texture.
-/// Non-mosaic shapes are skipped.
+/// UV coordinates mapping into the blurred screenshot texture. Each quad
+/// carries its own `blur_passes`, so the caller can draw groups with
+/// different blur strengths. Non-mosaic shapes are skipped.
 ///
-/// Returns vertices as `TexturedVertex` (position in NDC + UV in [0,1]).
+/// Quads are returned in z-order (finalized annotations first, in-progress last).
 pub fn tessellate_mosaic_quads(
     annotations: &[Annotation],
     drawing_shape: Option<&Shape>,
@@ -388,7 +413,7 @@ pub fn tessellate_mosaic_quads(
     output_rect: Rect,
     scale_factor: i32,
     surface_size: (u32, u32),
-) -> Vec<TexturedVertex> {
+) -> Vec<MosaicQuad> {
     let sw = surface_size.0 as f32;
     let sh = surface_size.1 as f32;
     if sw <= 0.0 || sh <= 0.0 {
@@ -399,17 +424,19 @@ pub fn tessellate_mosaic_quads(
     let oy = output_rect.y as f32;
     let sf = scale_factor as f32;
 
-    let mut vertices = Vec::new();
+    let mut quads = Vec::new();
 
     // Finalized mosaic annotations
     for ann in annotations {
-        if let Shape::Mosaic { .. } = &ann.shape {
-            push_mosaic_quad(ann, ox, oy, sf, sw, sh, &mut vertices);
+        if let Shape::Mosaic { blur_passes, .. } = &ann.shape {
+            if let Some(verts) = build_mosaic_quad(ann, ox, oy, sf, sw, sh) {
+                quads.push(MosaicQuad { blur_passes: *blur_passes, vertices: verts });
+            }
         }
     }
 
     // In-progress mosaic drawing
-    if let Some(Shape::Mosaic { .. }) = drawing_shape {
+    if let Some(Shape::Mosaic { blur_passes, .. }) = drawing_shape {
         let transform = drawing_transform.unwrap_or(Affine2::IDENTITY);
         let fake_ann = Annotation {
             shape: drawing_shape.unwrap().clone(),
@@ -417,21 +444,22 @@ pub fn tessellate_mosaic_quads(
             color: [0.0; 4],
             stroke_width: 0.0,
         };
-        push_mosaic_quad(&fake_ann, ox, oy, sf, sw, sh, &mut vertices);
+        if let Some(verts) = build_mosaic_quad(&fake_ann, ox, oy, sf, sw, sh) {
+            quads.push(MosaicQuad { blur_passes: *blur_passes, vertices: verts });
+        }
     }
 
-    vertices
+    quads
 }
 
-fn push_mosaic_quad(
+fn build_mosaic_quad(
     ann: &Annotation,
     ox: f32, oy: f32, sf: f32,
     sw: f32, sh: f32,
-    vertices: &mut Vec<TexturedVertex>,
-) {
+) -> Option<[TexturedVertex; 6]> {
     let bounds = AnnotationState::annotation_bounds(ann);
     if bounds.is_empty() {
-        return;
+        return None;
     }
 
     // Convert global logical bounds to per-output physical pixel coords → NDC + UV
@@ -453,14 +481,45 @@ fn push_mosaic_quad(
     let vb = b / sh;
 
     // 2 triangles: TL-TR-BL, TR-BR-BL
-    vertices.extend_from_slice(&[
+    Some([
         TexturedVertex { position: [nl, nt], uv: [ul, vt] },
         TexturedVertex { position: [nr, nt], uv: [ur, vt] },
         TexturedVertex { position: [nl, nb], uv: [ul, vb] },
         TexturedVertex { position: [nl, nb], uv: [ul, vb] },
         TexturedVertex { position: [nr, nt], uv: [ur, vt] },
         TexturedVertex { position: [nr, nb], uv: [ur, vb] },
-    ]);
+    ])
 }
 
 use crate::annotation::AnnotationState;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quad(passes: u32) -> MosaicQuad {
+        MosaicQuad {
+            blur_passes: passes,
+            vertices: [TexturedVertex { position: [0.0; 2], uv: [0.0; 2] }; 6],
+        }
+    }
+
+    #[test]
+    fn coalesce_adjacent_same_passes() {
+        let quads = [quad(3), quad(3), quad(5), quad(5), quad(3)];
+        let draws = coalesce_mosaic_draws(&quads);
+        assert_eq!(draws, vec![(3, 0..12), (5, 12..24), (3, 24..30)]);
+    }
+
+    #[test]
+    fn coalesce_empty_input() {
+        assert!(coalesce_mosaic_draws(&[]).is_empty());
+    }
+
+    #[test]
+    fn coalesce_all_distinct() {
+        let quads = [quad(1), quad(2), quad(3)];
+        let draws = coalesce_mosaic_draws(&quads);
+        assert_eq!(draws, vec![(1, 0..6), (2, 6..12), (3, 12..18)]);
+    }
+}

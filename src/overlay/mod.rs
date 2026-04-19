@@ -1,6 +1,7 @@
 pub mod renderer;
 
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use renderer::{Gpu, SelectionUniform};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
@@ -47,12 +48,11 @@ struct OutputOverlay {
     bg_view: Option<wgpu::TextureView>,
     /// Source texture size (matches the captured screenshot, not the surface).
     bg_size: Option<(u32, u32)>,
-    /// Blurred texture bind group for mosaic rendering. Lazily generated the
-    /// first time a mosaic quad needs to be drawn, and invalidated when the
-    /// blur-pass count changes.
-    blurred_bind_group: Option<wgpu::BindGroup>,
-    /// Pass count used to build the current `blurred_bind_group`.
-    blur_passes_used: Option<u32>,
+    /// Blurred texture bind groups for mosaic rendering, keyed by Kawase
+    /// pass count. Lazily generated the first time a mosaic quad with that
+    /// pass count needs to be drawn. Kept for the session — pass counts are
+    /// bounded to [BLUR_PASSES_MIN, BLUR_PASSES_MAX], so the map stays small.
+    blurred_bind_groups: BTreeMap<u32, wgpu::BindGroup>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
     selection_buffer: Option<wgpu::Buffer>,
     selection_bind_group: Option<wgpu::BindGroup>,
@@ -99,9 +99,6 @@ struct OverlayState {
     annotations: AnnotationState,
     /// Currently active tool.
     tool: Tool,
-    /// Blur-pass count used by the Mosaic tool. Bumping this invalidates each
-    /// output's cached blurred texture so it re-blurs on the next render.
-    blur_passes: u32,
     /// Egui state for toolbar rendering.
     egui: EguiState,
     /// Which subsystem owns the current pointer drag.
@@ -170,7 +167,7 @@ impl OverlayState {
             layer, output_name, output_pos, width: 0, height: 0, scale_factor: scale,
             configured: false,
             wgpu_surface: None, bg_bind_group: None, bg_view: None, bg_size: None,
-            blurred_bind_group: None, blur_passes_used: None, surface_config: None,
+            blurred_bind_groups: BTreeMap::new(), surface_config: None,
             selection_buffer: None, selection_bind_group: None,
             selection_vbuf: None, annotation_vbuf: None, mosaic_vbuf: None,
         });
@@ -244,11 +241,18 @@ impl OverlayState {
         self.egui.init_renderer(&self.gpu.device, wgpu::TextureFormat::Bgra8UnormSrgb);
         self.egui.set_pixels_per_point(tb_scale.max(1) as f32);
 
+        // Displayed slider value tracks the selected mosaic's own blur_passes,
+        // falling back to the tool default when nothing is selected. That way
+        // the slider edits the thing the user is looking at.
+        let selected_mosaic_passes = self.annotations.selected_mosaic_blur_passes();
+        let displayed_passes = selected_mosaic_passes
+            .unwrap_or_else(|| self.annotations.default_blur_passes());
+
         let (tool_change, blur_pass_change) = self.egui.run_ui(
             &self.gpu.device,
             &self.gpu.queue,
             self.tool,
-            self.blur_passes,
+            displayed_passes,
             confirmed_rect,
             tb_output_pos,
             tb_output_size,
@@ -264,14 +268,12 @@ impl OverlayState {
             }
         }
         if let Some(new_passes) = blur_pass_change {
-            if new_passes != self.blur_passes {
-                tracing::info!("blur passes changed: {} → {}", self.blur_passes, new_passes);
-                self.blur_passes = new_passes;
-                // Invalidate cached blurs so they rebuild with the new pass count.
-                for o in self.overlays.iter_mut() {
-                    o.blurred_bind_group = None;
-                    o.blur_passes_used = None;
-                }
+            if selected_mosaic_passes.is_some() {
+                // Editing a specific mosaic — the tool default is left alone so
+                // deselecting + drawing a new one keeps its prior setting.
+                self.annotations.set_selected_mosaic_blur_passes(new_passes);
+            } else {
+                self.annotations.set_default_blur_passes(new_passes);
             }
         }
 
@@ -381,8 +383,9 @@ impl OverlayState {
                 );
             }
 
-            // Tessellate mosaic quads for this output
-            let mos_verts = crate::annotation::render::tessellate_mosaic_quads(
+            // Tessellate mosaic quads for this output. Each quad carries the
+            // pass count that should be used to blur behind it.
+            let mos_quads = crate::annotation::render::tessellate_mosaic_quads(
                 annotations.annotations(),
                 drawing_shape,
                 drawing_transform,
@@ -390,36 +393,46 @@ impl OverlayState {
                 scale,
                 (phys_w, phys_h),
             );
-            let mos_vert_count = mos_verts.len() as u32;
-            let max_mos_verts = renderer::Gpu::MAX_MOSAIC_VERTICES as u32;
-            if mos_vert_count > max_mos_verts {
-                tracing::warn!("mosaic vertex count ({mos_vert_count}) exceeds buffer capacity ({max_mos_verts}), truncating");
+            let max_mos_quads = (renderer::Gpu::MAX_MOSAIC_VERTICES / 6) as usize;
+            if mos_quads.len() > max_mos_quads {
+                tracing::warn!("mosaic quad count ({}) exceeds buffer capacity ({max_mos_quads}), truncating", mos_quads.len());
             }
-            let mos_vert_count = mos_vert_count.min(max_mos_verts);
-            if !mos_verts.is_empty() {
-                let bytes_to_write = mos_vert_count as usize * std::mem::size_of::<renderer::TexturedVertex>();
+            let mos_quads_kept = mos_quads.len().min(max_mos_quads);
+
+            if mos_quads_kept > 0 {
+                let mut flat: Vec<renderer::TexturedVertex> = Vec::with_capacity(mos_quads_kept * 6);
+                for q in &mos_quads[..mos_quads_kept] {
+                    flat.extend_from_slice(&q.vertices);
+                }
                 self.gpu.queue.write_buffer(
                     overlay.mosaic_vbuf.as_ref().unwrap(), 0,
-                    &bytemuck::cast_slice(&mos_verts)[..bytes_to_write],
+                    bytemuck::cast_slice(&flat),
                 );
             }
 
-            // Lazily build (or rebuild) this output's blurred texture when a
-            // mosaic quad actually wants to render. Rebuild also fires after
-            // the user moves the blur-pass slider, which cleared the cache.
-            if mos_vert_count > 0 {
-                let needs_blur = overlay.blurred_bind_group.is_none()
-                    || overlay.blur_passes_used != Some(self.blur_passes);
-                if needs_blur {
-                    if let (Some(src_view), Some((bw, bh))) =
-                        (overlay.bg_view.as_ref(), overlay.bg_size)
-                    {
-                        let bg = self.blur.blur(src_view, bw, bh, self.blur_passes);
-                        overlay.blurred_bind_group = Some(bg);
-                        overlay.blur_passes_used = Some(self.blur_passes);
+            // Ensure each distinct pass count has a cached blurred bind group.
+            // Keyed by pass count, so two annotations with the same count share
+            // one blurred texture.
+            if mos_quads_kept > 0 {
+                if let (Some(src_view), Some((bw, bh))) =
+                    (overlay.bg_view.as_ref(), overlay.bg_size)
+                {
+                    for q in &mos_quads[..mos_quads_kept] {
+                        if !overlay.blurred_bind_groups.contains_key(&q.blur_passes) {
+                            let bg = self.blur.blur(src_view, bw, bh, q.blur_passes);
+                            overlay.blurred_bind_groups.insert(q.blur_passes, bg);
+                        }
                     }
                 }
             }
+
+            let mosaic_bg_draws: Vec<(&wgpu::BindGroup, std::ops::Range<u32>)> =
+                crate::annotation::render::coalesce_mosaic_draws(&mos_quads[..mos_quads_kept])
+                    .into_iter()
+                    .filter_map(|(passes, range)| {
+                        overlay.blurred_bind_groups.get(&passes).map(|bg| (bg, range))
+                    })
+                    .collect();
 
             // Render
             if let (Some(surface), Some(config), Some(bg), Some(sel_bg)) =
@@ -435,11 +448,10 @@ impl OverlayState {
                 } else {
                     None
                 };
-                let mosaic_opt = match (mos_vert_count, overlay.blurred_bind_group.as_ref()) {
-                    (0, _) | (_, None) => None,
-                    (_, Some(blurred_bg)) => {
-                        Some((blurred_bg, overlay.mosaic_vbuf.as_ref().unwrap(), mos_vert_count))
-                    }
+                let mosaic_opt = if !mosaic_bg_draws.is_empty() {
+                    Some((overlay.mosaic_vbuf.as_ref().unwrap(), mosaic_bg_draws.as_slice()))
+                } else {
+                    None
                 };
 
                 // Acquire surface texture once
@@ -529,7 +541,7 @@ impl OverlayState {
                     .collect();
 
                 match crate::compose::compose_selection(
-                    &self.gpu, &output_infos, &self.captured, &self.annotations, rect, self.blur_passes,
+                    &self.gpu, &output_infos, &self.captured, &self.annotations, rect,
                 ) {
                     Ok(img) => {
                         std::thread::spawn(move || {
@@ -781,14 +793,11 @@ impl LayerShellHandler for OverlayState {
             let ann_vbuf = self.gpu.create_annotation_vertex_buffer();
             let mos_vbuf = self.gpu.create_mosaic_vertex_buffer();
 
-            // Blur is deferred until a mosaic quad actually needs it — see
-            // `ensure_blurred_bind_group`.
             self.overlays[idx].wgpu_surface = Some(wgpu_surf);
             self.overlays[idx].bg_bind_group = Some(uploaded.bind_group);
             self.overlays[idx].bg_view = Some(uploaded.view);
             self.overlays[idx].bg_size = Some(cap_size);
-            self.overlays[idx].blurred_bind_group = None;
-            self.overlays[idx].blur_passes_used = None;
+            self.overlays[idx].blurred_bind_groups.clear();
             self.overlays[idx].surface_config = Some(config);
             self.overlays[idx].selection_buffer = Some(sel_buf);
             self.overlays[idx].selection_bind_group = Some(sel_bg);
@@ -1021,7 +1030,6 @@ fn run_inner(
         dirty: false,
         annotations: AnnotationState::new(),
         tool: Tool::Move,
-        blur_passes: 3,
         egui: EguiState::new(1.0),
         pointer_owner: PointerOwner::None,
         windows,

@@ -15,8 +15,11 @@ pub enum Shape {
     Line { start: Vec2, end: Vec2 },
     Rect { half_extents: Vec2 },
     Ellipse { radii: Vec2 },
-    Mosaic { half_extents: Vec2 },
+    Mosaic { half_extents: Vec2, blur_passes: u32 },
 }
+
+/// Default Kawase dual-filter pass count for a freshly drawn mosaic.
+pub const DEFAULT_BLUR_PASSES: u32 = 3;
 
 /// An annotation: a shape with a transform, color, and stroke width.
 #[derive(Debug, Clone)]
@@ -88,6 +91,9 @@ pub struct AnnotationState {
     /// Current pointer position during drawing (for computing center of Rect/Ellipse).
     draw_current: Option<Vec2>,
     next_id: usize,
+    /// Blur-pass count baked into the next mosaic the user draws. Updated by
+    /// the toolbar slider when no mosaic is currently selected.
+    default_blur_passes: u32,
 }
 
 /// Default annotation color: red.
@@ -108,6 +114,39 @@ impl AnnotationState {
             draw_start: None,
             draw_current: None,
             next_id: 0,
+            default_blur_passes: DEFAULT_BLUR_PASSES,
+        }
+    }
+
+    /// Blur-pass count that will be baked into the next mosaic drawn.
+    pub fn default_blur_passes(&self) -> u32 {
+        self.default_blur_passes
+    }
+
+    /// Update the blur-pass count baked into future mosaic drawings.
+    pub fn set_default_blur_passes(&mut self, passes: u32) {
+        self.default_blur_passes = passes;
+    }
+
+    /// Blur-pass count of the currently selected mosaic annotation, if any.
+    pub fn selected_mosaic_blur_passes(&self) -> Option<u32> {
+        let idx = self.selected_id?;
+        let ann = self.annotations.get(idx)?;
+        match &ann.shape {
+            Shape::Mosaic { blur_passes, .. } => Some(*blur_passes),
+            _ => None,
+        }
+    }
+
+    /// Update the blur-pass count on the currently selected mosaic annotation.
+    /// No-op if the selection is not a mosaic.
+    pub fn set_selected_mosaic_blur_passes(&mut self, passes: u32) {
+        let idx = match self.selected_id {
+            Some(i) if i < self.annotations.len() => i,
+            _ => return,
+        };
+        if let Shape::Mosaic { blur_passes, .. } = &mut self.annotations[idx].shape {
+            *blur_passes = passes;
         }
     }
 
@@ -222,7 +261,7 @@ impl AnnotationState {
                     (max_y - min_y + ann.stroke_width) as i32,
                 )
             }
-            Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
+            Shape::Rect { half_extents } | Shape::Mosaic { half_extents, .. } => {
                 let he = *half_extents;
                 // Local rect: (-he.x, -he.y) to (he.x, he.y)
                 let corners = [
@@ -286,7 +325,7 @@ impl AnnotationState {
                 let max_v = start.max(*end);
                 (min_v - Vec2::splat(hw), max_v + Vec2::splat(hw))
             }
-            Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
+            Shape::Rect { half_extents } | Shape::Mosaic { half_extents, .. } => {
                 let he = *half_extents;
                 (Vec2::new(-he.x - hw, -he.y - hw), Vec2::new(he.x + hw, he.y + hw))
             }
@@ -483,7 +522,10 @@ impl AnnotationState {
             }
             crate::ui::toolbar::Tool::Mosaic => {
                 self.draw_start = Some(p);
-                self.drawing = Some(Shape::Mosaic { half_extents: Vec2::ZERO });
+                self.drawing = Some(Shape::Mosaic {
+                    half_extents: Vec2::ZERO,
+                    blur_passes: self.default_blur_passes,
+                });
             }
             crate::ui::toolbar::Tool::Move => unreachable!(),
         }
@@ -504,7 +546,7 @@ impl AnnotationState {
                 Shape::Line { end, .. } => {
                     *end = p;
                 }
-                Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => {
+                Shape::Rect { half_extents } | Shape::Mosaic { half_extents, .. } => {
                     if let Some(start) = self.draw_start {
                         let half = (p - start) / 2.0;
                         *half_extents = Vec2::new(half.x.abs(), half.y.abs());
@@ -578,7 +620,7 @@ impl AnnotationState {
             let is_valid = match &shape {
                 Shape::Pen { points } => points.len() >= 2,
                 Shape::Line { start, end } => (*start - *end).length() > 1.0,
-                Shape::Rect { half_extents } | Shape::Mosaic { half_extents } => half_extents.x > 1.0 && half_extents.y > 1.0,
+                Shape::Rect { half_extents } | Shape::Mosaic { half_extents, .. } => half_extents.x > 1.0 && half_extents.y > 1.0,
                 Shape::Ellipse { radii } => radii.x > 1.0 && radii.y > 1.0,
             };
 
@@ -974,7 +1016,7 @@ mod tests {
         state.on_pointer_release((200.0, 200.0), BTN_LEFT);
 
         assert_eq!(state.annotations.len(), 1);
-        if let Shape::Mosaic { half_extents } = state.annotations[0].shape {
+        if let Shape::Mosaic { half_extents, .. } = state.annotations[0].shape {
             assert!((half_extents.x - 50.0).abs() < 1.0);
             assert!((half_extents.y - 50.0).abs() < 1.0);
         } else {

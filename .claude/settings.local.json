@@ -32,7 +32,9 @@
       "Read(//home/alice/.local/share/**)",
       "Read(//home/alice/.local/share/kwin/**)",
       "Bash(RUST_LOG=takeashot=debug timeout 15 cargo run -- --now)",
-      "Bash(qdbus:*)"
+      "Bash(qdbus:*)",
+      "Bash(git diff *)",
+      "Read(//tmp/**)"
     ]
   }
 }
