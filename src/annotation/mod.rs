@@ -46,6 +46,19 @@ pub struct EditHandlePos {
     pub pos: Vec2,
 }
 
+/// Oriented bounding box of an annotation in global logical space.
+/// Corners are in order: TL, TR, BR, BL (relative to local/unrotated space).
+#[derive(Debug, Clone, Copy)]
+pub struct OrientedRect {
+    pub corners: [Vec2; 4],
+}
+
+impl OrientedRect {
+    pub fn center(&self) -> Vec2 {
+        (self.corners[0] + self.corners[2]) / 2.0
+    }
+}
+
 /// Active drag operation during annotation editing.
 #[derive(Debug, Clone, Copy)]
 enum EditDrag {
@@ -252,6 +265,43 @@ impl AnnotationState {
         }
     }
 
+    /// Compute the oriented bounding box of an annotation in global logical space.
+    pub fn oriented_bounds(ann: &Annotation) -> OrientedRect {
+        let hw = ann.stroke_width / 2.0;
+        let (min, max) = match &ann.shape {
+            Shape::Pen { points } => {
+                if points.is_empty() {
+                    return OrientedRect { corners: [Vec2::ZERO; 4] };
+                }
+                let mut min_v = Vec2::new(f32::MAX, f32::MAX);
+                let mut max_v = Vec2::new(f32::MIN, f32::MIN);
+                for p in points {
+                    min_v = min_v.min(*p);
+                    max_v = max_v.max(*p);
+                }
+                (min_v - Vec2::splat(hw), max_v + Vec2::splat(hw))
+            }
+            Shape::Line { start, end } => {
+                let min_v = start.min(*end);
+                let max_v = start.max(*end);
+                (min_v - Vec2::splat(hw), max_v + Vec2::splat(hw))
+            }
+            Shape::Rect { half_extents } => {
+                let he = *half_extents;
+                (Vec2::new(-he.x - hw, -he.y - hw), Vec2::new(he.x + hw, he.y + hw))
+            }
+            Shape::Ellipse { radii } => {
+                let r = *radii;
+                (Vec2::new(-r.x - hw, -r.y - hw), Vec2::new(r.x + hw, r.y + hw))
+            }
+        };
+        let tl = ann.transform.transform_point2(Vec2::new(min.x, min.y));
+        let tr = ann.transform.transform_point2(Vec2::new(max.x, min.y));
+        let br = ann.transform.transform_point2(Vec2::new(max.x, max.y));
+        let bl = ann.transform.transform_point2(Vec2::new(min.x, max.y));
+        OrientedRect { corners: [tl, tr, br, bl] }
+    }
+
     /// Check if a point (in global logical coords) hits an annotation.
     /// Returns the index of the topmost annotation hit, or None.
     pub fn hit_test(&self, pos: Vec2) -> Option<usize> {
@@ -273,23 +323,25 @@ impl AnnotationState {
             Some(i) if i < self.annotations.len() => i,
             _ => return Vec::new(),
         };
-        let bounds = Self::annotation_bounds(&self.annotations[idx]);
+        let ob = Self::oriented_bounds(&self.annotations[idx]);
         let mut handles = Vec::with_capacity(5);
 
-        let l = bounds.left() as f32;
-        let t = bounds.top() as f32;
-        let r = bounds.right() as f32;
-        let b = bounds.bottom() as f32;
-        let mx = (l + r) / 2.0;
+        // 4 corner handles at oriented corners
+        handles.push(EditHandlePos { kind: EditHandle::Corner(0), pos: ob.corners[0] });
+        handles.push(EditHandlePos { kind: EditHandle::Corner(1), pos: ob.corners[1] });
+        handles.push(EditHandlePos { kind: EditHandle::Corner(2), pos: ob.corners[2] });
+        handles.push(EditHandlePos { kind: EditHandle::Corner(3), pos: ob.corners[3] });
 
-        // 4 corner handles
-        handles.push(EditHandlePos { kind: EditHandle::Corner(0), pos: Vec2::new(l, t) });
-        handles.push(EditHandlePos { kind: EditHandle::Corner(1), pos: Vec2::new(r, t) });
-        handles.push(EditHandlePos { kind: EditHandle::Corner(2), pos: Vec2::new(r, b) });
-        handles.push(EditHandlePos { kind: EditHandle::Corner(3), pos: Vec2::new(l, b) });
-
-        // Rotation handle: above top center, 20px up
-        handles.push(EditHandlePos { kind: EditHandle::Rotation, pos: Vec2::new(mx, t - 20.0) });
+        // Rotation handle: above top center, offset outward from center
+        let top_center = (ob.corners[0] + ob.corners[1]) / 2.0;
+        let center = ob.center();
+        let outward = top_center - center;
+        let rot_pos = if outward.length() > 0.01 {
+            top_center + outward.normalize() * 20.0
+        } else {
+            top_center + Vec2::new(0.0, -20.0)
+        };
+        handles.push(EditHandlePos { kind: EditHandle::Rotation, pos: rot_pos });
 
         handles
     }
@@ -338,11 +390,8 @@ impl AnnotationState {
                         if idx < self.annotations.len() {
                             let ann = &self.annotations[idx];
                             let start_transform = ann.transform;
-                            let bounds = Self::annotation_bounds(ann);
-                            let start_center = Vec2::new(
-                                (bounds.x + bounds.w / 2) as f32,
-                                (bounds.y + bounds.h / 2) as f32,
-                            );
+                            let ob = Self::oriented_bounds(ann);
+                            let start_center = ob.center();
                             match handle {
                                 EditHandle::Corner(corner) => {
                                     self.edit_drag = Some(EditDrag::ScalingCorner {

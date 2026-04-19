@@ -1,4 +1,4 @@
-use crate::annotation::{Annotation, EditHandle, EditHandlePos, Shape};
+use crate::annotation::{Annotation, EditHandle, EditHandlePos, OrientedRect, Shape};
 use crate::geom::Rect;
 use crate::overlay::renderer::ColoredVertex;
 use glam::{Affine2, Vec2};
@@ -12,7 +12,7 @@ use lyon_tessellation::{StrokeOptions, StrokeTessellator, BuffersBuilder, Vertex
 /// - `drawing_transform`: transform for the in-progress drawing
 /// - `drawing_color`: color for the in-progress drawing
 /// - `edit_handles`: edit handles to render for the selected annotation
-/// - `selected_bounds`: bounding box of the selected annotation (for dashed border)
+/// - `selected_oriented`: oriented bounding box of the selected annotation (for dashed border)
 /// - `output_rect`: global logical rect of this output (origin + logical size)
 /// - `scale_factor`: output scale factor (logical → physical)
 /// - `surface_size`: physical pixel size of the wgpu surface
@@ -24,7 +24,7 @@ pub fn tessellate_annotations(
     drawing_transform: Option<Affine2>,
     drawing_color: Option<[f32; 4]>,
     edit_handles: &[EditHandlePos],
-    selected_bounds: Option<Rect>,
+    selected_oriented: Option<OrientedRect>,
     output_rect: Rect,
     scale_factor: i32,
     surface_size: (u32, u32),
@@ -54,12 +54,11 @@ pub fn tessellate_annotations(
     }
 
     // Dashed border around selected annotation (alternating white and gray)
-    if let Some(bounds) = selected_bounds {
-        let tl = global_to_ndc(Vec2::new(bounds.x as f32, bounds.y as f32), ox, oy, sf, sw, sh);
-        let br = global_to_ndc(Vec2::new((bounds.x + bounds.w) as f32, (bounds.y + bounds.h) as f32), ox, oy, sf, sw, sh);
+    if let Some(ob) = selected_oriented {
+        let ndc_corners: [[f32; 2]; 4] = ob.corners.map(|c| global_to_ndc(c, ox, oy, sf, sw, sh));
         const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
         const BLACK: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
-        dashed_rect(tl[0], tl[1], br[0], br[1], sf, sw, sh, WHITE, BLACK, &mut vertices);
+        dashed_oriented_rect(&ndc_corners, sf, sw, sh, WHITE, BLACK, &mut vertices);
     }
 
     // Render edit handles with dark outlines
@@ -232,48 +231,76 @@ fn shape_to_path(shape: &Shape) -> Option<Path> {
     Some(builder.build())
 }
 
-/// Draw a dashed rectangle in NDC coordinates.
-/// Alternates between `color_a` and `color_b` for each dash segment.
-fn dashed_rect(
-    l: f32, t: f32, r: f32, b: f32,
+/// Draw a dashed oriented rectangle in NDC coordinates from 4 corner positions.
+/// Corners: [TL, TR, BR, BL].
+fn dashed_oriented_rect(
+    corners: &[[f32; 2]; 4],
     sf: f32, sw: f32, sh: f32,
     color_a: [f32; 4],
     color_b: [f32; 4],
     vertices: &mut Vec<ColoredVertex>,
 ) {
-    const DASH_LEN: f32 = 5.0; // logical pixels
-    const GAP_LEN: f32 = 2.0; // logical pixels
+    const DASH_LEN: f32 = 5.0;
+    const GAP_LEN: f32 = 2.0;
     const THICKNESS: f32 = 1.0; // logical pixels
 
-    let thickness_x = THICKNESS * sf / sw * 2.0;
-    let thickness_y = THICKNESS * sf / sh * 2.0;
+    // Compute edge lengths for dash index continuity
+    let edge_len = |a: &[f32; 2], b: &[f32; 2]| -> f32 {
+        ((b[0] - a[0]).hypot(b[1] - a[1])).abs()
+    };
 
-    // Compute total perimeter to determine dash index offset for continuity
-    let w = r - l;
-    let h = b - t;
-    let top_len = w;
-    let right_len = h - thickness_y * 2.0;
-    let bottom_len = w;
-    let _left_len = h - thickness_y * 2.0;
-    let period_ndc_h = (DASH_LEN + GAP_LEN) * sf / sw * 2.0;
-    let period_ndc_v = (DASH_LEN + GAP_LEN) * sf / sh * 2.0;
+    // For each edge, compute the inward perpendicular direction for thickness
+    let center_x = (corners[0][0] + corners[2][0]) / 2.0;
+    let center_y = (corners[0][1] + corners[2][1]) / 2.0;
 
-    // Count how many full periods fit on each preceding edge to offset dash index
-    let top_periods = (top_len / period_ndc_h).floor() as usize;
-    let right_periods = (right_len / period_ndc_v).floor() as usize;
-    let bottom_periods = (bottom_len / period_ndc_h).floor() as usize;
+    let perp_inward = |a: &[f32; 2], b: &[f32; 2]| -> (f32, f32) {
+        let dx = b[0] - a[0];
+        let dy = b[1] - a[1];
+        let len = dx.hypot(dy);
+        if len < 1e-6 { return (0.0, 0.0); }
+        // Two candidate perpendiculars: (-dy, dx) and (dy, -dx)
+        let mid_x = (a[0] + b[0]) / 2.0;
+        let mid_y = (a[1] + b[1]) / 2.0;
+        let (nx, ny) = (-dy / len, dx / len);
+        // Pick the one pointing toward center
+        let dot = nx * (center_x - mid_x) + ny * (center_y - mid_y);
+        if dot > 0.0 { (nx, ny) } else { (-nx, -ny) }
+    };
 
-    // Top edge
-    dashed_edge(l, t, r, t, DASH_LEN, GAP_LEN, 0.0, thickness_y, sf, sw, color_a, color_b, 0, vertices);
-    // Right edge
-    dashed_edge(r - thickness_x, t + thickness_y, r - thickness_x, b - thickness_y, DASH_LEN, GAP_LEN, thickness_x, 0.0, sf, sh, color_a, color_b, top_periods, vertices);
-    // Bottom edge (right→left to continue the pattern)
-    dashed_edge(r, b - thickness_y, l, b - thickness_y, DASH_LEN, GAP_LEN, 0.0, thickness_y, sf, sw, color_a, color_b, top_periods + right_periods, vertices);
-    // Left edge (bottom→top)
-    dashed_edge(l, b - thickness_y, l, t + thickness_y, DASH_LEN, GAP_LEN, thickness_x, 0.0, sf, sh, color_a, color_b, top_periods + right_periods + bottom_periods, vertices);
+    // Convert thickness to NDC scale (use geometric mean of X/Y NDC scales)
+    let thickness_ndc_x = THICKNESS * sf / sw * 2.0;
+    let thickness_ndc_y = THICKNESS * sf / sh * 2.0;
+
+    let top_len = edge_len(&corners[0], &corners[1]);
+    let right_len = edge_len(&corners[1], &corners[2]);
+    let bottom_len = edge_len(&corners[2], &corners[3]);
+
+    let period_ndc = (DASH_LEN + GAP_LEN) * sf / sw * 2.0;
+
+    let top_periods = (top_len / period_ndc).floor() as usize;
+    let right_periods = (right_len / period_ndc).floor() as usize;
+    let bottom_periods = (bottom_len / period_ndc).floor() as usize;
+
+    let edges = [
+        (&corners[0], &corners[1], 0),
+        (&corners[1], &corners[2], top_periods),
+        (&corners[2], &corners[3], top_periods + right_periods),
+        (&corners[3], &corners[0], top_periods + right_periods + bottom_periods),
+    ];
+
+    for (a, b, offset) in edges {
+        let (nx, ny) = perp_inward(a, b);
+        let tnx = nx * thickness_ndc_x;
+        let tny = ny * thickness_ndc_y;
+        dashed_edge(
+            a[0], a[1], b[0], b[1],
+            DASH_LEN, GAP_LEN, tnx, tny, sf, sw, color_a, color_b, offset, vertices,
+        );
+    }
 }
 
 /// Draw dashes along one edge, alternating colors.
+/// `dx`/`dy` is the perpendicular offset for line thickness (both start and end).
 /// `dash_index_offset` is used to maintain color alternation continuity across edges.
 fn dashed_edge(
     x0: f32, y0: f32, x1: f32, y1: f32,
@@ -294,7 +321,7 @@ fn dashed_edge(
     }
     if edge_len_ndc < dash_ndc {
         let color = if dash_index_offset % 2 == 0 { color_a } else { color_b };
-        vertices.extend_from_slice(&quad(x0, y0, x1 + dx, y1 + dy, color));
+        vertices.extend_from_slice(&quad_offset(x0, y0, x1, y1, dx, dy, color));
         return;
     }
 
@@ -311,10 +338,23 @@ fn dashed_edge(
         let ex = x0 + dir_x * dash_end;
         let ey = y0 + dir_y * dash_end;
         let color = if dash_idx % 2 == 0 { color_a } else { color_b };
-        vertices.extend_from_slice(&quad(sx, sy, ex + dx, ey + dy, color));
+        vertices.extend_from_slice(&quad_offset(sx, sy, ex, ey, dx, dy, color));
         pos += period_ndc;
         dash_idx += 1;
     }
+}
+
+/// Build 6 vertices (2 triangles) for a filled parallelogram from (x0,y0)→(x1,y1)
+/// with perpendicular thickness offset (dx, dy).
+fn quad_offset(x0: f32, y0: f32, x1: f32, y1: f32, dx: f32, dy: f32, color: [f32; 4]) -> [ColoredVertex; 6] {
+    [
+        ColoredVertex { position: [x0, y0], color },
+        ColoredVertex { position: [x0 + dx, y0 + dy], color },
+        ColoredVertex { position: [x1, y1], color },
+        ColoredVertex { position: [x1, y1], color },
+        ColoredVertex { position: [x0 + dx, y0 + dy], color },
+        ColoredVertex { position: [x1 + dx, y1 + dy], color },
+    ]
 }
 
 /// Build 6 vertices (2 triangles) for a filled rectangle.

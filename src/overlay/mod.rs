@@ -320,7 +320,7 @@ impl OverlayState {
                 if selected_idx.is_some() { &edit_handles } else { &[] },
                 selected_idx.and_then(|idx| {
                     annotations.annotations().get(idx)
-                        .map(|ann| crate::annotation::AnnotationState::annotation_bounds(ann))
+                        .map(|ann| crate::annotation::AnnotationState::oriented_bounds(ann))
                 }),
                 output_rect,
                 scale,
