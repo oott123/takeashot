@@ -316,6 +316,38 @@ impl AnnotationState {
         None
     }
 
+    /// True if the current drawing tool operates on this shape kind.
+    fn matches_tool(shape: &Shape, tool: crate::ui::toolbar::Tool) -> bool {
+        use crate::ui::toolbar::Tool;
+        matches!(
+            (shape, tool),
+            (Shape::Pen { .. }, Tool::Pen)
+                | (Shape::Line { .. }, Tool::Line)
+                | (Shape::Rect { .. }, Tool::Rect)
+                | (Shape::Ellipse { .. }, Tool::Ellipse)
+                | (Shape::Mosaic { .. }, Tool::Mosaic)
+        )
+    }
+
+    /// Hit-test only annotations whose shape matches the current tool.
+    fn hit_test_matching(&self, pos: Vec2, tool: crate::ui::toolbar::Tool) -> Option<usize> {
+        let p = crate::geom::Point::new(pos.x as i32, pos.y as i32);
+        for (idx, ann) in self.annotations.iter().enumerate().rev() {
+            if !Self::matches_tool(&ann.shape, tool) {
+                continue;
+            }
+            if Self::annotation_bounds(ann).contains(p) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// True if an edit drag (move/scale/rotate of a selected annotation) is in progress.
+    pub fn has_edit_drag(&self) -> bool {
+        self.edit_drag.is_some()
+    }
+
     /// Compute the edit handle positions for the currently selected annotation.
     /// Returns empty vec if no annotation is selected.
     pub fn edit_handles(&self) -> Vec<EditHandlePos> {
@@ -358,13 +390,16 @@ impl AnnotationState {
 
     /// Handle a pointer press event in annotation mode.
     /// `pos` is in global logical coordinates.
-    /// `tool` must be a drawing tool or AnnotationEdit.
+    /// `tool` must be a drawing tool (Pen/Line/Rect/Ellipse/Mosaic); Move short-circuits.
+    /// When `force_new` is true (Alt or Shift held), hit-testing is skipped and a new
+    /// shape is always started.
     /// `selection_rect` is the confirmed selection rect in global logical coords.
     pub fn on_pointer_press(
         &mut self,
         pos: (f64, f64),
         button: u32,
         tool: crate::ui::toolbar::Tool,
+        force_new: bool,
         _selection_rect: Option<Rect>,
     ) -> AnnotationAction {
         let p = Vec2::new(pos.0 as f32, pos.1 as f32);
@@ -373,84 +408,86 @@ impl AnnotationState {
             return AnnotationAction::None;
         }
 
-        match tool {
-            crate::ui::toolbar::Tool::AnnotationEdit => {
-                // First check edit handles of the currently selected annotation
-                if let Some(handle) = self.hit_test_edit_handle(p) {
-                    if let Some(idx) = self.selected_id {
-                        if idx < self.annotations.len() {
-                            let ann = &self.annotations[idx];
-                            let start_transform = ann.transform;
-                            let ob = Self::oriented_bounds(ann);
-                            let start_center = ob.center();
-                            match handle {
-                                EditHandle::Corner(corner) => {
-                                    self.edit_drag = Some(EditDrag::ScalingCorner {
-                                        corner,
-                                        start_pos: p,
-                                        start_transform,
-                                        start_center,
-                                    });
-                                }
-                                EditHandle::Rotation => {
-                                    let start_angle = (p - start_center).to_angle();
-                                    self.edit_drag = Some(EditDrag::Rotating {
-                                        start_pos: p,
-                                        start_angle,
-                                        start_transform,
-                                        start_center,
-                                    });
-                                }
+        if matches!(tool, crate::ui::toolbar::Tool::Move) {
+            return AnnotationAction::None;
+        }
+
+        // Unless the user is forcing a new shape, first try to interact with
+        // an existing annotation of the same kind: handle first, then body.
+        if !force_new {
+            if let Some(idx) = self.selected_id {
+                if idx < self.annotations.len()
+                    && Self::matches_tool(&self.annotations[idx].shape, tool)
+                {
+                    if let Some(handle) = self.hit_test_edit_handle(p) {
+                        let ann = &self.annotations[idx];
+                        let start_transform = ann.transform;
+                        let ob = Self::oriented_bounds(ann);
+                        let start_center = ob.center();
+                        match handle {
+                            EditHandle::Corner(corner) => {
+                                self.edit_drag = Some(EditDrag::ScalingCorner {
+                                    corner,
+                                    start_pos: p,
+                                    start_transform,
+                                    start_center,
+                                });
                             }
-                            return AnnotationAction::Consumed;
+                            EditHandle::Rotation => {
+                                let start_angle = (p - start_center).to_angle();
+                                self.edit_drag = Some(EditDrag::Rotating {
+                                    start_pos: p,
+                                    start_angle,
+                                    start_transform,
+                                    start_center,
+                                });
+                            }
                         }
+                        return AnnotationAction::Consumed;
                     }
                 }
-
-                // Then try to select an annotation
-                if let Some(idx) = self.hit_test(p) {
-                    self.selected_id = Some(idx);
-                    let ann = &self.annotations[idx];
-                    let start_transform = ann.transform;
-                    self.edit_drag = Some(EditDrag::Moving {
-                        start_pos: p,
-                        start_transform,
-                    });
-                } else {
-                    self.deselect_all();
-                }
-                AnnotationAction::Consumed
             }
+
+            if let Some(idx) = self.hit_test_matching(p, tool) {
+                self.selected_id = Some(idx);
+                let start_transform = self.annotations[idx].transform;
+                self.edit_drag = Some(EditDrag::Moving {
+                    start_pos: p,
+                    start_transform,
+                });
+                return AnnotationAction::Consumed;
+            }
+        }
+
+        // No hit (or forced new): begin drawing. Any prior selection is
+        // cleared so its handles disappear for the duration of the draw.
+        self.selected_id = None;
+        self.edit_drag = None;
+
+        match tool {
             crate::ui::toolbar::Tool::Pen => {
                 self.draw_start = Some(p);
                 self.drawing = Some(Shape::Pen { points: vec![p] });
-                AnnotationAction::Consumed
             }
             crate::ui::toolbar::Tool::Line => {
                 self.draw_start = Some(p);
                 self.drawing = Some(Shape::Line { start: p, end: p });
-                AnnotationAction::Consumed
             }
             crate::ui::toolbar::Tool::Rect => {
                 self.draw_start = Some(p);
                 self.drawing = Some(Shape::Rect { half_extents: Vec2::ZERO });
-                AnnotationAction::Consumed
             }
             crate::ui::toolbar::Tool::Ellipse => {
                 self.draw_start = Some(p);
                 self.drawing = Some(Shape::Ellipse { radii: Vec2::ZERO });
-                AnnotationAction::Consumed
             }
             crate::ui::toolbar::Tool::Mosaic => {
                 self.draw_start = Some(p);
                 self.drawing = Some(Shape::Mosaic { half_extents: Vec2::ZERO });
-                AnnotationAction::Consumed
             }
-            crate::ui::toolbar::Tool::Move => {
-                // Move tool doesn't interact with annotations
-                AnnotationAction::None
-            }
+            crate::ui::toolbar::Tool::Move => unreachable!(),
         }
+        AnnotationAction::Consumed
     }
 
     /// Handle a pointer motion event.
@@ -583,21 +620,31 @@ impl AnnotationState {
         let p = Vec2::new(pos.0 as f32, pos.1 as f32);
 
         match tool {
-            crate::ui::toolbar::Tool::AnnotationEdit => {
-                if self.edit_drag.is_some() {
-                    return Some(CursorShape::Move);
-                }
-                if self.hit_test(p).is_some() {
-                    return Some(CursorShape::Move);
-                }
-                Some(CursorShape::Crosshair)
-            }
             crate::ui::toolbar::Tool::Pen
             | crate::ui::toolbar::Tool::Line
             | crate::ui::toolbar::Tool::Rect
             | crate::ui::toolbar::Tool::Ellipse
             | crate::ui::toolbar::Tool::Mosaic => {
-                // Drawing tools always use crosshair inside selection
+                // Active edit drag → Move cursor regardless of position.
+                if self.edit_drag.is_some() {
+                    return Some(CursorShape::Move);
+                }
+                // Hovering a handle of the currently selected (matching-shape)
+                // annotation → Move cursor (future: dedicated resize/rotate cursors).
+                if let Some(idx) = self.selected_id {
+                    if idx < self.annotations.len()
+                        && Self::matches_tool(&self.annotations[idx].shape, tool)
+                        && self.hit_test_edit_handle(p).is_some()
+                    {
+                        return Some(CursorShape::Move);
+                    }
+                }
+                // Hovering a same-kind annotation body → Move cursor
+                // (click will select + move).
+                if self.hit_test_matching(p, tool).is_some() {
+                    return Some(CursorShape::Move);
+                }
+                // Otherwise: crosshair inside the selection, defer outside.
                 if let Some(rect) = selection_rect {
                     let gp = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
                     if rect.contains(gp) {
@@ -616,10 +663,24 @@ mod tests {
     use super::*;
     use crate::ui::toolbar::Tool;
 
+    /// Draw a Line from `a` to `b`.
+    fn draw_line(state: &mut AnnotationState, a: (f64, f64), b: (f64, f64)) {
+        state.on_pointer_press(a, BTN_LEFT, Tool::Line, false, None);
+        state.on_pointer_motion(b);
+        state.on_pointer_release(b, BTN_LEFT);
+    }
+
+    /// Draw a Rect from `a` to `b`.
+    fn draw_rect(state: &mut AnnotationState, a: (f64, f64), b: (f64, f64)) {
+        state.on_pointer_press(a, BTN_LEFT, Tool::Rect, false, None);
+        state.on_pointer_motion(b);
+        state.on_pointer_release(b, BTN_LEFT);
+    }
+
     #[test]
     fn draw_pen_stroke() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Pen, None);
+        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Pen, false, None);
         state.on_pointer_motion((120.0, 100.0));
         state.on_pointer_motion((140.0, 110.0));
         state.on_pointer_release((140.0, 110.0), BTN_LEFT);
@@ -629,11 +690,9 @@ mod tests {
     }
 
     #[test]
-    fn draw_line() {
+    fn draw_line_shape() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
 
         assert_eq!(state.annotations.len(), 1);
         if let Shape::Line { start, end } = state.annotations[0].shape {
@@ -645,11 +704,9 @@ mod tests {
     }
 
     #[test]
-    fn draw_rect() {
+    fn draw_rect_shape() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Rect, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_rect(&mut state, (100.0, 100.0), (200.0, 200.0));
 
         assert_eq!(state.annotations.len(), 1);
         if let Shape::Rect { half_extents } = state.annotations[0].shape {
@@ -661,9 +718,9 @@ mod tests {
     }
 
     #[test]
-    fn draw_ellipse() {
+    fn draw_ellipse_shape() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Ellipse, None);
+        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Ellipse, false, None);
         state.on_pointer_motion((200.0, 200.0));
         state.on_pointer_release((200.0, 200.0), BTN_LEFT);
 
@@ -679,19 +736,14 @@ mod tests {
     #[test]
     fn too_small_line_is_discarded() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((100.5, 100.5));
-        state.on_pointer_release((100.5, 100.5), BTN_LEFT);
-
+        draw_line(&mut state, (100.0, 100.0), (100.5, 100.5));
         assert_eq!(state.annotations.len(), 0);
     }
 
     #[test]
     fn clear_removes_all() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
         assert_eq!(state.annotations.len(), 1);
 
         state.clear();
@@ -702,13 +754,8 @@ mod tests {
     #[test]
     fn delete_selected_annotation() {
         let mut state = AnnotationState::new();
-        // Draw two lines
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
-        state.on_pointer_press((300.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((400.0, 200.0));
-        state.on_pointer_release((400.0, 200.0), BTN_LEFT);
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
+        draw_line(&mut state, (300.0, 100.0), (400.0, 200.0));
         assert_eq!(state.annotations.len(), 2);
 
         // Select first annotation
@@ -719,27 +766,76 @@ mod tests {
     }
 
     #[test]
-    fn annotation_edit_select_on_click() {
+    fn move_tool_ignores_annotations() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
 
-        // Click on the line's bounds
-        let result = state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::AnnotationEdit, None);
-        assert_eq!(result, AnnotationAction::Consumed);
-        assert_eq!(state.selected_id, Some(0));
+        let result = state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Move, false, None);
+        assert_eq!(result, AnnotationAction::None);
     }
 
     #[test]
-    fn move_tool_ignores_annotations() {
+    fn line_tool_selects_existing_line() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
 
-        let result = state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Move, None);
-        assert_eq!(result, AnnotationAction::None);
+        // Click on the line's bounds in Line mode → selects instead of starting a new draw.
+        let result = state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Line, false, None);
+        assert_eq!(result, AnnotationAction::Consumed);
+        assert_eq!(state.selected_id, Some(0));
+        assert!(state.drawing.is_none(), "should not start drawing over existing line");
+    }
+
+    #[test]
+    fn rect_tool_ignores_non_matching_shape() {
+        let mut state = AnnotationState::new();
+        // An existing Line — from Rect tool's perspective, this is empty space.
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
+
+        // Click on the line's bounds in Rect mode → starts drawing a new rect,
+        // does not select the line.
+        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Rect, false, None);
+        assert!(state.selected_id.is_none());
+        assert!(matches!(state.drawing, Some(Shape::Rect { .. })));
+    }
+
+    #[test]
+    fn force_new_bypasses_hit_test() {
+        let mut state = AnnotationState::new();
+        draw_rect(&mut state, (100.0, 100.0), (200.0, 200.0));
+        assert_eq!(state.annotations.len(), 1);
+
+        // force_new=true → click inside the existing rect must begin a new draw,
+        // not select the existing rect.
+        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Rect, true, None);
+        assert!(state.selected_id.is_none());
+        assert!(matches!(state.drawing, Some(Shape::Rect { .. })));
+    }
+
+    #[test]
+    fn force_new_bypasses_handle_of_selected() {
+        let mut state = AnnotationState::new();
+        draw_rect(&mut state, (100.0, 100.0), (200.0, 200.0));
+        // Pre-select the rect so its handles are active.
+        state.selected_id = Some(0);
+
+        let handles = state.edit_handles();
+        let corner_pos = handles
+            .iter()
+            .find(|h| matches!(h.kind, EditHandle::Corner(0)))
+            .unwrap()
+            .pos;
+
+        // force_new=true over a handle → still starts drawing, not scaling.
+        state.on_pointer_press(
+            (corner_pos.x as f64, corner_pos.y as f64),
+            BTN_LEFT,
+            Tool::Rect,
+            true,
+            None,
+        );
+        assert!(state.edit_drag.is_none());
+        assert!(matches!(state.drawing, Some(Shape::Rect { .. })));
     }
 
     #[test]
@@ -759,32 +855,35 @@ mod tests {
     }
 
     #[test]
-    fn cursor_edit_over_annotation() {
+    fn cursor_over_matching_annotation() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
 
-        let cursor = state.cursor_for_position((150.0, 150.0), Tool::AnnotationEdit, None);
+        // In Line tool, over the existing line → Move cursor (click will select).
+        let cursor = state.cursor_for_position((150.0, 150.0), Tool::Line, None);
         assert_eq!(cursor, Some(CursorShape::Move));
     }
 
     #[test]
-    fn cursor_edit_no_annotation() {
-        let state = AnnotationState::new();
-        let cursor = state.cursor_for_position((500.0, 500.0), Tool::AnnotationEdit, None);
+    fn cursor_over_non_matching_annotation_defers() {
+        let mut state = AnnotationState::new();
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
+
+        // In Rect tool, over a Line → the Line is invisible to hit-testing,
+        // so the cursor falls through to the default (crosshair inside selection,
+        // None outside).
+        let sel = Rect::new(0, 0, 500, 500);
+        let cursor = state.cursor_for_position((150.0, 150.0), Tool::Rect, Some(&sel));
         assert_eq!(cursor, Some(CursorShape::Crosshair));
     }
 
     #[test]
-    fn move_annotation() {
+    fn move_annotation_via_drawing_tool() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Line, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_line(&mut state, (100.0, 100.0), (200.0, 200.0));
 
-        // Select and start moving
-        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::AnnotationEdit, None);
+        // Select via Line tool and start moving.
+        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Line, false, None);
         let orig_translation = state.annotations[0].transform.translation;
 
         state.on_pointer_motion((160.0, 160.0));
@@ -801,9 +900,7 @@ mod tests {
     #[test]
     fn edit_handles_exist_for_selected() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Rect, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_rect(&mut state, (100.0, 100.0), (200.0, 200.0));
 
         // No handles before selection
         assert!(state.edit_handles().is_empty());
@@ -816,47 +913,63 @@ mod tests {
     }
 
     #[test]
-    fn click_edit_handle_starts_scaling() {
+    fn selected_handle_usable_in_drawing_tool() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Rect, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_rect(&mut state, (100.0, 100.0), (200.0, 200.0));
 
-        // Select the annotation first
-        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::AnnotationEdit, None);
+        // Select via Rect tool.
+        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Rect, false, None);
         assert_eq!(state.selected_id, Some(0));
         state.on_pointer_release((150.0, 150.0), BTN_LEFT);
 
-        // Now click on a corner handle (top-left corner is near (100, 100))
+        // Click on a corner handle in the same tool → starts scaling, not drawing.
         let handles = state.edit_handles();
-        let corner_pos = handles.iter().find(|h| matches!(h.kind, EditHandle::Corner(0))).unwrap().pos;
-        state.on_pointer_press((corner_pos.x as f64, corner_pos.y as f64), BTN_LEFT, Tool::AnnotationEdit, None);
-        // Should have started a scaling drag, not a move
+        let corner_pos = handles
+            .iter()
+            .find(|h| matches!(h.kind, EditHandle::Corner(0)))
+            .unwrap()
+            .pos;
+        state.on_pointer_press(
+            (corner_pos.x as f64, corner_pos.y as f64),
+            BTN_LEFT,
+            Tool::Rect,
+            false,
+            None,
+        );
         assert!(matches!(state.edit_drag, Some(EditDrag::ScalingCorner { .. })));
+        assert!(state.drawing.is_none());
     }
 
     #[test]
-    fn click_rotation_handle_starts_rotation() {
+    fn selected_rotation_handle_starts_rotation() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Rect, None);
-        state.on_pointer_motion((200.0, 200.0));
-        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        draw_rect(&mut state, (100.0, 100.0), (200.0, 200.0));
 
-        // Select the annotation first
-        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::AnnotationEdit, None);
+        // Select via Rect tool.
+        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Rect, false, None);
         state.on_pointer_release((150.0, 150.0), BTN_LEFT);
 
-        // Click on the rotation handle
+        // Click on the rotation handle.
         let handles = state.edit_handles();
-        let rot_pos = handles.iter().find(|h| matches!(h.kind, EditHandle::Rotation)).unwrap().pos;
-        state.on_pointer_press((rot_pos.x as f64, rot_pos.y as f64), BTN_LEFT, Tool::AnnotationEdit, None);
+        let rot_pos = handles
+            .iter()
+            .find(|h| matches!(h.kind, EditHandle::Rotation))
+            .unwrap()
+            .pos;
+        state.on_pointer_press(
+            (rot_pos.x as f64, rot_pos.y as f64),
+            BTN_LEFT,
+            Tool::Rect,
+            false,
+            None,
+        );
         assert!(matches!(state.edit_drag, Some(EditDrag::Rotating { .. })));
     }
 
     #[test]
     fn draw_mosaic() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Mosaic, None);
+        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Mosaic, false, None);
         state.on_pointer_motion((200.0, 200.0));
         state.on_pointer_release((200.0, 200.0), BTN_LEFT);
 
@@ -870,9 +983,25 @@ mod tests {
     }
 
     #[test]
+    fn rect_tool_does_not_select_mosaic() {
+        let mut state = AnnotationState::new();
+        // Mosaic uses the same geometry as Rect, but is a distinct shape kind.
+        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Mosaic, false, None);
+        state.on_pointer_motion((200.0, 200.0));
+        state.on_pointer_release((200.0, 200.0), BTN_LEFT);
+        assert_eq!(state.annotations.len(), 1);
+
+        // In Rect mode, clicking on the Mosaic should begin a new Rect — the
+        // Mosaic is not selectable by the Rect tool.
+        state.on_pointer_press((150.0, 150.0), BTN_LEFT, Tool::Rect, false, None);
+        assert!(state.selected_id.is_none());
+        assert!(matches!(state.drawing, Some(Shape::Rect { .. })));
+    }
+
+    #[test]
     fn too_small_mosaic_is_discarded() {
         let mut state = AnnotationState::new();
-        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Mosaic, None);
+        state.on_pointer_press((100.0, 100.0), BTN_LEFT, Tool::Mosaic, false, None);
         state.on_pointer_motion((100.5, 100.5));
         state.on_pointer_release((100.5, 100.5), BTN_LEFT);
 

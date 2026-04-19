@@ -5,7 +5,6 @@ use crate::geom::Rect;
 pub enum Tool {
     #[default]
     Move,
-    AnnotationEdit,
     Pen,
     Line,
     Rect,
@@ -14,15 +13,9 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// Returns true if this tool draws annotations (Pen, Line, Rect, Ellipse, Mosaic).
-    pub fn is_drawing(&self) -> bool {
-        matches!(self, Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic)
-    }
-
     /// All tools in toolbar order.
-    pub const ALL: [Tool; 7] = [
+    pub const ALL: [Tool; 6] = [
         Tool::Move,
-        Tool::AnnotationEdit,
         Tool::Pen,
         Tool::Line,
         Tool::Rect,
@@ -34,7 +27,6 @@ impl Tool {
     pub fn label(&self) -> &'static str {
         match self {
             Tool::Move => "\u{2195} Move",          // ↕
-            Tool::AnnotationEdit => "\u{270E} Edit", // ✎
             Tool::Pen => "\u{270F} Pen",             // ✏
             Tool::Line => "\u{2571} Line",           // ╱
             Tool::Rect => "\u{25AD} Rect",           // ▭
@@ -50,7 +42,7 @@ pub const BLUR_PASSES_MAX: u32 = 8;
 
 /// Toolbar pixel dimensions (width, height).
 /// Height accounts for the two rows (tool buttons + tool-specific options).
-pub const TOOLBAR_WIDTH: f32 = 420.0;
+pub const TOOLBAR_WIDTH: f32 = 368.0;
 pub const TOOLBAR_HEIGHT: f32 = 68.0;
 
 /// Compute the toolbar bounding rect in global logical coordinates.

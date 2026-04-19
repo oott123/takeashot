@@ -23,7 +23,6 @@ use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_s
 use wayland_client::{Connection, Proxy, QueueHandle};
 
 use crate::annotation::AnnotationState;
-use crate::annotation::AnnotationAction;
 use crate::capture;
 use crate::capture::CapturedScreen;
 use crate::geom::Rect;
@@ -111,6 +110,8 @@ struct OverlayState {
     windows: Vec<WindowInfo>,
     /// Last left-click time and position for double-click detection.
     last_click: Option<(u32, (f64, f64))>,
+    /// Current keyboard modifier state (Alt/Shift force "new shape" on press).
+    modifiers: Modifiers,
 }
 
 delegate_compositor!(OverlayState);
@@ -255,10 +256,10 @@ impl OverlayState {
         if let Some(new_tool) = tool_change {
             if new_tool != self.tool {
                 tracing::info!("tool changed: {:?} → {:?}", self.tool, new_tool);
-                // Deselect annotation when switching away from AnnotationEdit
-                if matches!(self.tool, Tool::AnnotationEdit) {
-                    self.annotations.deselect_all();
-                }
+                // Every tool switch drops the current annotation selection:
+                // selection semantics are scoped to "annotations of the current
+                // tool's shape", so carrying it across is meaningless.
+                self.annotations.deselect_all();
                 self.tool = new_tool;
             }
         }
@@ -474,19 +475,15 @@ impl OverlayState {
     fn update_cursor(&mut self, conn: &Connection, pos: (f64, f64)) {
         let shape = match self.tool {
             Tool::Move => self.selection.cursor_for_position(pos),
-            Tool::AnnotationEdit => {
-                let sel_rect = self.selection.selection.rect();
-                self.annotations.cursor_for_position(pos, Tool::AnnotationEdit, sel_rect)
-                    .unwrap_or_else(|| self.selection.cursor_for_position(pos))
-            }
             Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
-                // Inside confirmed selection: crosshair; outside: let selection decide
-                let inside = self.selection.selection.rect().map_or(false, |r| {
-                    let p = crate::geom::Point::new(pos.0 as i32, pos.1 as i32);
-                    r.contains(p)
-                });
-                if inside && self.selection.selection.is_confirmed() {
-                    CursorShape::Crosshair
+                // Only consult the annotation system once the selection is
+                // confirmed — before that, the drawing tool isn't usable and
+                // the selection state machine should drive the cursor.
+                if self.selection.selection.is_confirmed() {
+                    let sel_rect = self.selection.selection.rect();
+                    self.annotations
+                        .cursor_for_position(pos, self.tool, sel_rect)
+                        .unwrap_or_else(|| self.selection.cursor_for_position(pos))
                 } else {
                     self.selection.cursor_for_position(pos)
                 }
@@ -560,21 +557,27 @@ impl OverlayState {
             return;
         }
 
-        // Right-click in confirmed mode: cycle tools (drawing → Edit → Move → cancel)
+        // Right-click in confirmed mode, new rules (drawing tools only):
+        //   - active drag/drawing → ignore, keep the drag clean
+        //   - annotation selected → deselect, stay in tool
+        //   - no selection       → snap back to Move tool
+        //   - Move tool          → fall through to selection's cancel path
         if button == 0x111 {
-            match self.tool {
-                Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
-                    self.annotations.deselect_all();
-                    self.tool = Tool::AnnotationEdit;
-                    return;
-                }
-                Tool::AnnotationEdit => {
-                    self.annotations.deselect_all();
-                    self.tool = Tool::Move;
-                    return;
-                }
-                Tool::Move => {} // fall through to cancel/exit
+            if self.annotations.drawing_shape().is_some() || self.annotations.has_edit_drag() {
+                return;
             }
+            if self.annotations.has_selection() {
+                self.annotations.deselect_all();
+                self.dirty = true;
+                return;
+            }
+            if self.tool != Tool::Move {
+                self.tool = Tool::Move;
+                self.dirty = true;
+                return;
+            }
+            // Move tool with no annotation selection: let SelectionState handle
+            // right-click (clear selection or exit).
         }
 
         // Double-click detection: left click inside confirmed selection with Move tool
@@ -608,16 +611,6 @@ impl OverlayState {
                     self.exit_requested = true;
                 }
             }
-            Tool::AnnotationEdit => {
-                let sel_rect = self.selection.selection.rect().copied();
-                let action = self.annotations.on_pointer_press(pos, button, Tool::AnnotationEdit, sel_rect);
-                if action == AnnotationAction::None {
-                    // Annotation didn't consume — fall through to selection
-                    if self.selection.on_pointer_press(pos, button) {
-                        self.exit_requested = true;
-                    }
-                }
-            }
             Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
                 // Check if pointer is inside confirmed selection
                 let inside = self.selection.selection.rect().map_or(false, |r| {
@@ -626,7 +619,8 @@ impl OverlayState {
                 });
                 if inside && self.selection.selection.is_confirmed() {
                     let sel_rect = self.selection.selection.rect().copied();
-                    self.annotations.on_pointer_press(pos, button, self.tool, sel_rect);
+                    let force_new = self.modifiers.alt || self.modifiers.shift;
+                    self.annotations.on_pointer_press(pos, button, self.tool, force_new, sel_rect);
                 } else {
                     // Outside selection: route to selection (create/extend)
                     if self.selection.on_pointer_press(pos, button) {
@@ -657,7 +651,7 @@ impl OverlayState {
         if self.selection.selection.is_confirmed() {
             match self.tool {
                 Tool::Move => {}
-                Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
+                Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
                     self.annotations.on_pointer_motion(pos);
                 }
             }
@@ -678,7 +672,7 @@ impl OverlayState {
         if was_confirmed {
             match self.tool {
                 Tool::Move => {}
-                Tool::AnnotationEdit | Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
+                Tool::Pen | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Mosaic => {
                     self.annotations.on_pointer_release(pos, button);
                 }
             }
@@ -960,7 +954,9 @@ impl KeyboardHandler for OverlayState {
         }
     }
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
-    fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: Modifiers, _: RawModifiers, _: u32) {}
+    fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, mods: Modifiers, _: RawModifiers, _: u32) {
+        self.modifiers = mods;
+    }
     fn repeat_key(&mut self, c: &Connection, q: &QueueHandle<Self>, k: &wl_keyboard::WlKeyboard, s: u32, e: KeyEvent) { self.press_key(c, q, k, s, e); }
 }
 
@@ -1030,6 +1026,7 @@ fn run_inner(
         pointer_owner: PointerOwner::None,
         windows,
         last_click: None,
+        modifiers: Modifiers::default(),
     };
 
     event_queue.flush()?;
